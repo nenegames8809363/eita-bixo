@@ -59,10 +59,11 @@ public class MainActivity extends Activity {
 
     // =====================================================================
     static class Game implements GLSurfaceView.Renderer {
-        static final int SX = 48, SY = 28, SZ = 48;
-        static final int MAXF = 40000, MP = 400;
+        static final int SX = 64, SY = 32, SZ = 64, SEA = 8;
+        static final int MAXF = 80000, MP = 400;
         static final float HW = 0.3f, PH = 1.8f, EYE = 1.62f, SPEED = 5.2f;
         // {topo, lado}
+        static final int NB = 13;
         static final int[][] COR = {
             {0, 0},
             {0x3FAE46, 0x7A5230}, // grama
@@ -71,9 +72,16 @@ public class MainActivity extends Activity {
             {0xE6D58A, 0xD4C377}, // areia
             {0xB48850, 0x9A6B35}, // madeira
             {0x2E8B3A, 0x277A32}, // folha
-            {0xE63CDC, 0xA02AA0}  // caos
+            {0xE63CDC, 0xA02AA0}, // caos
+            {0xF2F7FF, 0xDDE8F2}, // neve
+            {0x3A3A3A, 0x303030}, // carvao
+            {0xC9A58C, 0xB8937A}, // ferro
+            {0xF2D13A, 0xDDBB2A}, // ouro
+            {0x3EE0E0, 0x2CC4C4}, // diamante
+            {0x6FA83A, 0x5C8F2E}, // cacto
+            {0x2F6FD6, 0x2A62C9}  // agua
         };
-        static final String[] NOMES = {"GRAMA", "TERRA", "PEDRA", "AREIA", "MADEIRA", "FOLHA", "CAOS"};
+        static final String[] NOMES = {"GRAMA", "TERRA", "PEDRA", "AREIA", "MADEIRA", "FOLHA", "CAOS", "NEVE", "CARVAO", "FERRO", "OURO", "DIAMANTE", "CACTO"};
         static final float[][] CORN = {
             {1,0,0, 1,1,0, 1,1,1, 1,0,1},
             {0,0,1, 0,1,1, 0,1,0, 0,0,0},
@@ -133,48 +141,201 @@ public class MainActivity extends Activity {
             return -1;
         }
 
+        boolean lastUw;
+
+        static float hash2(int x, int z, int s) {
+            int h = x * 374761393 + z * 668265263 + s * 1274126177;
+            h = (h ^ (h >>> 13)) * 1274126177;
+            h ^= (h >>> 16);
+            return (h & 0xFFFF) / 65535f;
+        }
+
+        static float vnoise(float x, float z, int s) {
+            int x0 = (int) Math.floor(x), z0 = (int) Math.floor(z);
+            float fx = x - x0, fz = z - z0;
+            fx = fx * fx * (3f - 2f * fx);
+            fz = fz * fz * (3f - 2f * fz);
+            float a = hash2(x0, z0, s), b = hash2(x0 + 1, z0, s);
+            float c = hash2(x0, z0 + 1, s), d = hash2(x0 + 1, z0 + 1, s);
+            float top = a + (b - a) * fx, bot = c + (d - c) * fx;
+            return top + (bot - top) * fz;
+        }
+
+        static float fbm(float x, float z, int s, int oct) {
+            float sum = 0f, amp = 1f, f = 1f, tot = 0f;
+            for (int i = 0; i < oct; i++) {
+                sum += vnoise(x * f, z * f, s + i * 31) * amp;
+                tot += amp;
+                amp *= 0.5f;
+                f *= 2f;
+            }
+            return sum / tot;
+        }
+
+        boolean water(float x, float y, float z) {
+            int bx = (int) Math.floor(x), by = (int) Math.floor(y), bz = (int) Math.floor(z);
+            return inb(bx, by, bz) && blocks[idx(bx, by, bz)] == 14;
+        }
+
+        void carve(int cx, int cy, int cz, float r) {
+            int ri = (int) Math.ceil(r);
+            for (int dx = -ri; dx <= ri; dx++) {
+                for (int dy = -ri; dy <= ri; dy++) {
+                    for (int dz = -ri; dz <= ri; dz++) {
+                        if (dx * dx + dy * dy + dz * dz > r * r) continue;
+                        int x = cx + dx, y = cy + dy, z = cz + dz;
+                        if (!inb(x, y, z) || y < 2) continue;
+                        int t = blocks[idx(x, y, z)];
+                        if (t == 0 || t == 14) continue;
+                        blocks[idx(x, y, z)] = 0;
+                    }
+                }
+            }
+        }
+
+        void ore(int type, int veins, int maxY, int size) {
+            for (int v = 0; v < veins; v++) {
+                int x = rnd.nextInt(SX), y = 2 + rnd.nextInt(maxY - 1), z = rnd.nextInt(SZ);
+                int n = size / 2 + rnd.nextInt(size);
+                for (int i = 0; i < n; i++) {
+                    if (inb(x, y, z) && blocks[idx(x, y, z)] == 3) blocks[idx(x, y, z)] = (byte) type;
+                    x += rnd.nextInt(3) - 1;
+                    y += rnd.nextInt(3) - 1;
+                    z += rnd.nextInt(3) - 1;
+                }
+            }
+        }
+
+        void tree(int x, int h, int z) {
+            int th = 4 + rnd.nextInt(3);
+            if (h + th + 2 >= SY) return;
+            for (int k = 1; k <= th; k++) blocks[idx(x, h + k, z)] = 5;
+            for (int dy = th - 2; dy <= th + 1; dy++) {
+                int r = (dy >= th) ? 1 : 2;
+                for (int dx = -r; dx <= r; dx++) {
+                    for (int dz = -r; dz <= r; dz++) {
+                        if (r == 2 && Math.abs(dx) == 2 && Math.abs(dz) == 2) continue;
+                        int ax = x + dx, ay = h + dy, az = z + dz;
+                        if (inb(ax, ay, az) && blocks[idx(ax, ay, az)] == 0) blocks[idx(ax, ay, az)] = 6;
+                    }
+                }
+            }
+        }
+
         void generate() {
             Arrays.fill(blocks, (byte) 0);
-            float ox = rnd.nextFloat() * 100f, oz = rnd.nextFloat() * 100f;
+            int seed = rnd.nextInt(100000);
+            int[] hmap = new int[SX * SZ];
+            byte[] topT = new byte[SX * SZ];
+            byte[] bio = new byte[SX * SZ];
+
+            // terreno, biomas, rios e agua
             for (int x = 0; x < SX; x++) {
                 for (int z = 0; z < SZ; z++) {
-                    double n = Math.sin((x + ox) * 0.21) * 2.2 + Math.cos((z + oz) * 0.17) * 2.2
-                            + Math.sin((x + z + ox) * 0.09) * 2.0 + rnd.nextFloat() * 0.6;
-                    int h = clamp(7 + (int) Math.round(n), 2, SY - 9);
-                    for (int y = 0; y <= h; y++) {
+                    float e = (fbm(x * 0.028f, z * 0.028f, seed, 4) - 0.5f) * 2.6f;
+                    float m = (fbm(x * 0.018f, z * 0.018f, seed + 99, 3) - 0.5f) * 2.6f;
+                    float h = SEA + 3 + e * 7f + Math.max(0f, m - 0.15f) * 22f;
+                    float rv = Math.abs(fbm(x * 0.022f, z * 0.022f, seed + 7, 2) - 0.5f) * 2.6f;
+                    if (rv < 0.07f) {
+                        float k = 1f - rv / 0.07f;
+                        h += ((SEA - 2) - h) * k;
+                    }
+                    float tp = (fbm(x * 0.02f, z * 0.02f, seed + 3, 2) - 0.5f) * 2.6f;
+                    float hm = (fbm(x * 0.02f, z * 0.02f, seed + 5, 2) - 0.5f) * 2.6f;
+                    int hi = clamp(Math.round(h), 2, SY - 7);
+                    int top, sub, b;
+                    if (hi <= SEA + 1) { top = 4; sub = 4; b = 5; }
+                    else if (hi >= SEA + 10) { top = (hi >= SEA + 14) ? 8 : 3; sub = 3; b = 4; }
+                    else if (tp < -0.35f) { top = 8; sub = 2; b = 2; }
+                    else if (tp > 0.35f && hm < 0.15f) { top = 4; sub = 4; b = 3; }
+                    else { top = 1; sub = 2; b = (hm > 0.2f) ? 1 : 0; }
+                    for (int y = 0; y <= hi; y++) {
                         int t;
-                        if (y == h) t = (h <= 5) ? 4 : 1;
-                        else if (y >= h - 3) t = (h <= 5) ? 4 : 2;
+                        if (y == hi) t = top;
+                        else if (y >= hi - 3) t = sub;
                         else t = 3;
                         blocks[idx(x, y, z)] = (byte) t;
                     }
+                    for (int y = hi + 1; y <= SEA; y++) blocks[idx(x, y, z)] = 14;
+                    hmap[x * SZ + z] = hi;
+                    topT[x * SZ + z] = (byte) top;
+                    bio[x * SZ + z] = (byte) b;
                 }
             }
-            for (int i = 0; i < 45; i++) {
-                int x = 3 + rnd.nextInt(SX - 6), z = 3 + rnd.nextInt(SZ - 6);
-                if (Math.abs(x - SX / 2) < 5 && Math.abs(z - SZ / 2) < 5) continue;
-                int h = topY(x, z);
-                if (h < 0 || blocks[idx(x, h, z)] != 1) continue;
-                for (int k = 1; k <= 4; k++) blocks[idx(x, h + k, z)] = 5;
-                for (int dy = 3; dy <= 5; dy++) {
-                    int r = (dy == 5) ? 1 : 2;
-                    for (int dx = -r; dx <= r; dx++) {
-                        for (int dz = -r; dz <= r; dz++) {
-                            if (r == 2 && Math.abs(dx) == 2 && Math.abs(dz) == 2) continue;
-                            int ax = x + dx, ay = h + dy, az = z + dz;
-                            if (inb(ax, ay, az) && blocks[idx(ax, ay, az)] == 0) blocks[idx(ax, ay, az)] = 6;
-                        }
+
+            // cavernas (minhocas que furam o mundo)
+            for (int w = 0; w < 16; w++) {
+                float wx = 4 + rnd.nextFloat() * (SX - 8);
+                float wz = 4 + rnd.nextFloat() * (SZ - 8);
+                int hx = hmap[(int) wx * SZ + (int) wz];
+                if (hx < 11) continue;
+                float wy = 4 + rnd.nextFloat() * (hx - 8);
+                float ang = rnd.nextFloat() * 6.2832f;
+                float pit = (rnd.nextFloat() - 0.5f) * 0.5f;
+                float rad = 1.3f + rnd.nextFloat();
+                int len = 70 + rnd.nextInt(90);
+                for (int st = 0; st < len; st++) {
+                    float cp = (float) Math.cos(pit);
+                    wx += (float) Math.cos(ang) * cp;
+                    wz += (float) Math.sin(ang) * cp;
+                    wy += (float) Math.sin(pit);
+                    ang += (rnd.nextFloat() - 0.5f) * 0.6f;
+                    pit = pit * 0.9f + (rnd.nextFloat() - 0.5f) * 0.35f;
+                    if (wx < 2 || wx > SX - 3 || wz < 2 || wz > SZ - 3 || wy < 3) break;
+                    carve((int) wx, (int) wy, (int) wz, rad);
+                }
+            }
+
+            // minerios
+            ore(9, 70, 20, 7);
+            ore(10, 45, 14, 5);
+            ore(11, 18, 8, 4);
+            ore(12, 9, 5, 3);
+
+            // arvores e cactos
+            for (int x = 2; x < SX - 2; x++) {
+                for (int z = 2; z < SZ - 2; z++) {
+                    int hi = hmap[x * SZ + z];
+                    if (hi <= SEA + 1 || blocks[idx(x, hi, z)] != topT[x * SZ + z]) continue;
+                    if (blocks[idx(x, hi + 1, z)] != 0) continue;
+                    int bb = bio[x * SZ + z];
+                    float r = rnd.nextFloat();
+                    if (bb == 0 && r < 0.008f) tree(x, hi, z);
+                    else if (bb == 1 && r < 0.06f) tree(x, hi, z);
+                    else if (bb == 2 && r < 0.02f) tree(x, hi, z);
+                    else if (bb == 3 && r < 0.015f) {
+                        int ch = 2 + rnd.nextInt(2);
+                        for (int k = 1; k <= ch; k++) blocks[idx(x, hi + k, z)] = 13;
                     }
                 }
             }
-            int cx = SX / 2, cz = SZ / 2;
-            px = cx + 0.5f;
-            pz = cz + 0.5f;
-            py = topY(cx, cz) + 1f;
+
+            // spawn em terra firme, o mais perto do centro
+            int bx = SX / 2, bz = SZ / 2, fxp = -1, fzp = -1;
+            for (int r = 0; r < 24 && fxp < 0; r++) {
+                for (int dx = -r; dx <= r && fxp < 0; dx++) {
+                    for (int dz = -r; dz <= r; dz++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
+                        int ax = bx + dx, az = bz + dz;
+                        if (ax < 1 || az < 1 || ax >= SX - 1 || az >= SZ - 1) continue;
+                        int ty = topY(ax, az);
+                        if (ty <= SEA) continue;
+                        int tt = blocks[idx(ax, ty, az)];
+                        if (tt == 14 || tt == 6 || tt == 5 || tt == 13) continue;
+                        fxp = ax;
+                        fzp = az;
+                        break;
+                    }
+                }
+            }
+            if (fxp < 0) { fxp = bx; fzp = bz; }
+            px = fxp + 0.5f;
+            pz = fzp + 0.5f;
+            py = topY(fxp, fzp) + 1f;
             vy = 0f;
             fall = false;
             caosT = 0f;
-            java.util.Arrays.fill(plife, 0f);
+            Arrays.fill(plife, 0f);
             dirty = true;
         }
 
@@ -183,6 +344,10 @@ public class MainActivity extends Activity {
             if (y < 0) return 1;
             if (!inb(x, y, z)) return 0;
             return blocks[idx(x, y, z)];
+        }
+
+        boolean vis(int t, int n) {
+            return n == 0 || (n == 14 && t != 14);
         }
 
         void face(int x, int y, int z, int d, int t) {
@@ -216,12 +381,12 @@ public class MainActivity extends Activity {
                     for (int x = 0; x < SX; x++) {
                         int t = blocks[idx(x, y, z)];
                         if (t == 0) continue;
-                        if (g(x + 1, y, z) == 0) face(x, y, z, 0, t);
-                        if (g(x - 1, y, z) == 0) face(x, y, z, 1, t);
-                        if (g(x, y + 1, z) == 0) face(x, y, z, 2, t);
-                        if (g(x, y - 1, z) == 0) face(x, y, z, 3, t);
-                        if (g(x, y, z + 1) == 0) face(x, y, z, 4, t);
-                        if (g(x, y, z - 1) == 0) face(x, y, z, 5, t);
+                        if (vis(t, g(x + 1, y, z))) face(x, y, z, 0, t);
+                        if (vis(t, g(x - 1, y, z))) face(x, y, z, 1, t);
+                        if (vis(t, g(x, y + 1, z))) face(x, y, z, 2, t);
+                        if (vis(t, g(x, y - 1, z))) face(x, y, z, 3, t);
+                        if (vis(t, g(x, y, z + 1))) face(x, y, z, 4, t);
+                        if (vis(t, g(x, y, z - 1))) face(x, y, z, 5, t);
                     }
                 }
             }
@@ -234,7 +399,7 @@ public class MainActivity extends Activity {
             if (y < 0) return true;
             if (y >= SY) return false;
             if (x < 0 || x >= SX || z < 0 || z >= SZ) return true;
-            return blocks[idx(x, y, z)] != 0;
+            return blocks[idx(x, y, z)] != 0 && blocks[idx(x, y, z)] != 14;
         }
 
         boolean collides(float x, float y, float z) {
@@ -259,11 +424,19 @@ public class MainActivity extends Activity {
             float fxx = (float) Math.sin(yr), fzz = (float) -Math.cos(yr);
             float rx = (float) Math.cos(yr), rz = (float) Math.sin(yr);
             float fw = -jy, st = jx;
-            float mx = (fxx * fw + rx * st) * SPEED * dt;
-            float mz = (fzz * fw + rz * st) * SPEED * dt;
-            vy -= 26f * dt;
-            if (vy < -40f) vy = -40f;
-            if (jumpHeld && onGround) vy = 8.6f;
+            boolean sw = water(px, py + 0.2f, pz);
+            float sp = sw ? SPEED * 0.6f : SPEED;
+            float mx = (fxx * fw + rx * st) * sp * dt;
+            float mz = (fzz * fw + rz * st) * sp * dt;
+            if (sw) {
+                vy -= 7f * dt;
+                if (vy < -3f) vy = -3f;
+                if (jumpHeld) vy = water(px, py + 1.0f, pz) ? 4.2f : 8.4f;
+            } else {
+                vy -= 26f * dt;
+                if (vy < -40f) vy = -40f;
+                if (jumpHeld && onGround) vy = 8.6f;
+            }
             float my = vy * dt;
             onGround = false;
             float big = Math.max(Math.abs(mx), Math.max(Math.abs(my), Math.abs(mz)));
@@ -302,7 +475,7 @@ public class MainActivity extends Activity {
                 int cy = (int) Math.floor(ey + dy * s);
                 int cz = (int) Math.floor(ez + dz * s);
                 if (cx == lx && cy == ly && cz == lz) continue;
-                if (inb(cx, cy, cz) && blocks[idx(cx, cy, cz)] != 0) {
+                if (inb(cx, cy, cz) && blocks[idx(cx, cy, cz)] != 0 && blocks[idx(cx, cy, cz)] != 14) {
                     hit[0] = cx; hit[1] = cy; hit[2] = cz;
                     hit[3] = lx; hit[4] = ly; hit[5] = lz;
                     return true;
@@ -325,7 +498,7 @@ public class MainActivity extends Activity {
         void doPlace() {
             if (!raycast()) return;
             int x = hit[3], y = hit[4], z = hit[5];
-            if (!inb(x, y, z) || blocks[idx(x, y, z)] != 0 || overlapsPlayer(x, y, z)) return;
+            if (!inb(x, y, z) || (blocks[idx(x, y, z)] != 0 && blocks[idx(x, y, z)] != 14) || overlapsPlayer(x, y, z)) return;
             blocks[idx(x, y, z)] = (byte) (sel + 1);
             dirty = true;
         }
@@ -439,8 +612,9 @@ public class MainActivity extends Activity {
             gl.glEnable(GL10.GL_DEPTH_TEST);
             gl.glEnable(GL10.GL_FOG);
             gl.glFogf(GL10.GL_FOG_MODE, GL10.GL_LINEAR);
-            gl.glFogf(GL10.GL_FOG_START, 20f);
-            gl.glFogf(GL10.GL_FOG_END, 48f);
+            gl.glFogf(GL10.GL_FOG_START, 26f);
+            lastUw = false;
+            gl.glFogf(GL10.GL_FOG_END, 62f);
             gl.glFogfv(GL10.GL_FOG_COLOR, new float[]{0.53f, 0.81f, 0.92f, 1f}, 0);
             gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
             gl.glEnableClientState(GL10.GL_COLOR_ARRAY);
@@ -485,6 +659,15 @@ public class MainActivity extends Activity {
                 dirty = false;
             }
 
+            boolean uw = water(px, py + EYE, pz);
+            if (uw != lastUw) {
+                lastUw = uw;
+                float[] fc = uw ? new float[]{0.12f, 0.32f, 0.70f, 1f} : new float[]{0.53f, 0.81f, 0.92f, 1f};
+                gl.glFogfv(GL10.GL_FOG_COLOR, fc, 0);
+                gl.glFogf(GL10.GL_FOG_START, uw ? 0.5f : 26f);
+                gl.glFogf(GL10.GL_FOG_END, uw ? 16f : 62f);
+                gl.glClearColor(fc[0], fc[1], fc[2], 1f);
+            }
             gl.glClear(GL10.GL_COLOR_BUFFER_BIT | GL10.GL_DEPTH_BUFFER_BIT);
             gl.glMatrixMode(GL10.GL_MODELVIEW);
             gl.glLoadIdentity();
@@ -535,8 +718,8 @@ public class MainActivity extends Activity {
         float jr() { return getHeight() * 0.11f; }
         float jcx() { return getWidth() - getHeight() * 0.2f; }
         float jcy() { return getHeight() - getHeight() * 0.26f; }
-        float hs() { return getHeight() * 0.105f; }
-        float hl() { float s = hs(); return (getWidth() - (7 * s + 6 * s * 0.15f)) / 2f; }
+        float hs() { return getHeight() * 0.085f; }
+        float hl() { float s = hs(); return (getWidth() - (Game.NB * s + (Game.NB - 1) * s * 0.15f)) / 2f; }
         float ht() { return getHeight() - hs() - getHeight() * 0.035f; }
 
         void layout() {
@@ -547,7 +730,7 @@ public class MainActivity extends Activity {
         int hotHit(float x, float y) {
             float s = hs(), l = hl(), t = ht();
             if (y < t || y > t + s) return -1;
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < Game.NB; i++) {
                 float x0 = l + i * s * 1.15f;
                 if (x >= x0 && x <= x0 + s) return i;
             }
@@ -710,7 +893,7 @@ public class MainActivity extends Activity {
             c.drawText("NOVO MUNDO", novo.centerX(), novo.centerY() + H * 0.014f, p);
             // hotbar
             float s = hs(), l = hl(), tp = ht();
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < Game.NB; i++) {
                 float x0 = l + i * s * 1.15f;
                 rr.set(x0, tp, x0 + s, tp + s);
                 p.setStyle(Paint.Style.FILL);
