@@ -20,9 +20,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
@@ -60,6 +62,8 @@ public class MainActivity extends Activity {
     protected void onPause() { super.onPause(); glv.onPause(); }
     @Override
     protected void onResume() { super.onResume(); glv.onResume(); }
+    @Override
+    protected void onDestroy() { game.shutdown(); super.onDestroy(); }
 
     // =====================================================================
     static class Game implements GLSurfaceView.Renderer {
@@ -70,11 +74,12 @@ public class MainActivity extends Activity {
         static final int SNOW_Y = 58;           // acima disso tem neve
         static final int RENDER_R = 4;          // raio (em chunks) que desenha
         static final int LOAD_R = RENDER_R + 1; // raio (em chunks) que gera
-        static final int GEN_BUDGET = 1;        // chunks gerados por frame
-        static final int MESH_BUDGET = 2;       // chunks "montados" por frame
+        static final int MAX_GEN = 6;           // chunks sendo gerados ao mesmo tempo
+        static final int MAX_MESH = 4;          // malhas sendo montadas ao mesmo tempo
         static final float FOG_S = 28f, FOG_E = 60f, FAR = 110f;
 
         static final int MP = 400;
+        static final int HB = 9;                // slots da hotbar
         static final float HW = 0.3f, PH = 1.8f, EYE = 1.62f, SPEED = 5.2f;
 
         // ids dos blocos
@@ -96,7 +101,8 @@ public class MainActivity extends Activity {
             {0x2F8F3F, 0x2A7A36}, // 10 cacto
             {0xC9A46A, 0x9A8466}  // 11 minerio
         };
-        static final String[] NOMES = {"GRAMA", "TERRA", "PEDRA", "AREIA", "MADEIRA", "FOLHA", "CAOS"};
+        static final String[] NOMES = {"VAZIO", "GRAMA", "TERRA", "PEDRA", "AREIA", "MADEIRA",
+                "FOLHA", "CAOS", "AGUA", "NEVE", "CACTO", "MINERIO"};
         static final float[][] CORN = {
             {1,0,0, 1,1,0, 1,1,1, 1,0,1},
             {0,0,1, 0,1,1, 0,1,0, 0,0,0},
@@ -166,9 +172,11 @@ public class MainActivity extends Activity {
             final int cx, cz;
             final byte[] b;
             int maxY;
-            boolean dirty = true, urgent, meshed, modified, loaded = true;
+            int version = 1, meshVer = 0;     // precisa de malha nova quando meshVer != version
+            boolean urgent, meshed, meshing, modified, loaded = true;
             Mesh mo, mw; // opaco e agua
             Chunk(int cx, int cz, byte[] b) { this.cx = cx; this.cz = cz; this.b = b; }
+            boolean needsMesh() { return meshVer != version; }
             void calcMaxY() {
                 maxY = 0;
                 for (int y = SY - 1; y >= 0; y--) {
@@ -182,7 +190,22 @@ public class MainActivity extends Activity {
 
         static final class Col { int h, top, sub, biome; float m; }
 
-        // ruido de valor (value noise) com seed
+        // trabalho pra thread / resultado dela
+        static final class Job {
+            boolean gen;
+            int world, cx, cz, version;
+            Noise noise;
+            Chunk c, w, e, n, s;
+        }
+
+        static final class Res {
+            boolean gen;
+            int world, cx, cz, version;
+            Chunk c;
+            Mesh mo, mw;
+        }
+
+        // ruido de valor (value noise) com seed (sem estado, pode usar em qualquer thread)
         static final class Noise {
             final int seed;
             Noise(int s) { seed = s; }
@@ -228,20 +251,250 @@ public class MainActivity extends Activity {
             }
         }
 
+        // ---------- gerador de terreno (cada thread tem o seu) ----------
+        static final class Gen {
+            Noise noise = new Noise(1);
+            final Col col = new Col(), tcol = new Col();
+
+            void column(int x, int z, Col o) {
+                float cont = noise.fbm(x * 0.005f, z * 0.005f, 3);            // continentes/oceanos
+                float hill = noise.fbm(x * 0.03f + 100f, z * 0.03f - 100f, 4); // colinas
+                float mtn = noise.fbm(x * 0.011f - 300f, z * 0.011f + 300f, 4); // montanhas
+                float temp = noise.fbm(x * 0.0035f + 700f, z * 0.0035f - 700f, 2);
+                float moist = noise.fbm(x * 0.004f - 900f, z * 0.004f + 900f, 2);
+                float m = (mtn - 0.5f) * 6f;
+                if (m < 0f) m = 0f;
+                if (m > 1f) m = 1f;
+                float h = SEA + 3 + (cont - 0.5f) * 36f + (hill - 0.5f) * 14f + m * m * 36f;
+                int hi = clamp((int) h, 2, SY - 14);
+                int biome = 0;                                    // 0 planicie, 1 floresta, 2 deserto
+                if (temp > 0.56f && moist < 0.5f) biome = 2;
+                else if (moist > 0.52f) biome = 1;
+                o.h = hi;
+                o.m = m;
+                o.biome = biome;
+                if (hi <= SEA + 1) { o.top = SAND; o.sub = SAND; }
+                else if (biome == 2 && m < 0.3f) { o.top = SAND; o.sub = SAND; }
+                else if (hi >= SNOW_Y) { o.top = SNOW; o.sub = STONE; }
+                else if (m > 0.35f && hi > SEA + 12) { o.top = STONE; o.sub = STONE; }
+                else { o.top = GRASS; o.sub = DIRT; }
+            }
+
+            // cavernas: onde dois campos de ruido ficam perto de 0.5 ao mesmo tempo (tuneis)
+            boolean carve(int x, int y, int z) {
+                float a = noise.v3(x * 0.055f, y * 0.08f, z * 0.055f);
+                if (Math.abs(a - 0.5f) > 0.035f) return false;
+                float b = noise.v3(x * 0.055f + 200f, y * 0.08f + 200f, z * 0.055f + 200f);
+                return Math.abs(b - 0.5f) < 0.035f;
+            }
+
+            void put(Chunk c, int ox, int oz, int wx, int y, int wz, int t) {
+                int lx = wx - ox, lz = wz - oz;
+                if (lx < 0 || lx >= CS || lz < 0 || lz >= CS || y < 0 || y >= SY) return;
+                int i = (y * CS + lz) * CS + lx;
+                int cur = c.b[i];
+                if (cur == AIR || (t == WOOD && cur == LEAF)) c.b[i] = (byte) t;
+            }
+
+            void tree(Chunk c, int ox, int oz, int tx, int tz, int h) {
+                int th = 4 + (noise.hash(tx, 31, tz) & 1);
+                for (int dy = th - 1; dy <= th + 1; dy++) {
+                    int r = (dy == th + 1) ? 1 : 2;
+                    for (int dx = -r; dx <= r; dx++) {
+                        for (int dz = -r; dz <= r; dz++) {
+                            if (r == 2 && Math.abs(dx) == 2 && Math.abs(dz) == 2) continue;
+                            put(c, ox, oz, tx + dx, h + dy, tz + dz, LEAF);
+                        }
+                    }
+                }
+                for (int k = 1; k <= th; k++) put(c, ox, oz, tx, h + k, tz, WOOD);
+            }
+
+            void cactus(Chunk c, int ox, int oz, int tx, int tz, int h) {
+                int ch = 2 + (noise.hash(tx, 55, tz) & 1);
+                for (int k = 1; k <= ch; k++) put(c, ox, oz, tx, h + k, tz, CACTUS);
+            }
+
+            // arvores/cactos sao decididos so pela posicao (seed), entao
+            // cada chunk calcula as arvores dos vizinhos que invadem ele (sem emenda)
+            void decorate(Chunk c, int ox, int oz) {
+                for (int tz = oz - 2; tz < oz + CS + 2; tz++) {
+                    for (int tx = ox - 2; tx < ox + CS + 2; tx++) {
+                        float r = noise.rand(tx, 9001, tz);
+                        if (r > 0.05f) continue;
+                        column(tx, tz, tcol);
+                        if (tcol.h <= SEA + 1) continue;
+                        if (tcol.top == SAND) {
+                            if (tcol.biome == 2 && r < 0.008f) cactus(c, ox, oz, tx, tz, tcol.h);
+                            continue;
+                        }
+                        if (tcol.top != GRASS) continue;
+                        float dens = (tcol.biome == 1) ? 0.05f : 0.006f;
+                        if (r < dens) tree(c, ox, oz, tx, tz, tcol.h);
+                    }
+                }
+            }
+
+            Chunk generate(int cx, int cz) {
+                byte[] b = new byte[CS * SY * CS];
+                Chunk c = new Chunk(cx, cz, b);
+                int ox = cx * CS, oz = cz * CS;
+                for (int lz = 0; lz < CS; lz++) {
+                    for (int lx = 0; lx < CS; lx++) {
+                        int x = ox + lx, z = oz + lz;
+                        column(x, z, col);
+                        int h = col.h;
+                        for (int y = 0; y <= h; y++) {
+                            int t;
+                            if (y == 0) t = STONE;
+                            else if (y == h) t = col.top;
+                            else if (y >= h - 3) t = col.sub;
+                            else {
+                                t = STONE;
+                                if (y < 40 && noise.rand(x, y + 5000, z) < 0.012f) t = ORE;
+                            }
+                            if (y >= 2 && y <= h - 2 && carve(x, y, z)) continue;
+                            b[(y * CS + lz) * CS + lx] = (byte) t;
+                        }
+                        for (int y = h + 1; y <= SEA; y++) b[(y * CS + lz) * CS + lx] = (byte) WATER;
+                    }
+                }
+                decorate(c, ox, oz);
+                c.calcMaxY();
+                return c;
+            }
+        }
+
+        // ---------- montador de malha (cada thread tem o seu) ----------
+        static final class Mesher {
+            final Sink so = new Sink(), sw = new Sink();
+            Chunk cW, cE, cN, cS;
+            Mesh mo, mw;
+
+            int nb(Chunk c, int x, int y, int z) {
+                if (y < 0) return STONE;
+                if (y >= SY) return AIR;
+                Chunk t = c;
+                if (x < 0) { t = cW; x = 15; }
+                else if (x > 15) { t = cE; x = 0; }
+                if (z < 0) { t = cN; z = 15; }
+                else if (z > 15) { t = cS; z = 0; }
+                if (t == null) return AIR;
+                return t.b[(y * CS + z) * CS + x];
+            }
+
+            // x e z locais (0..15): o chunk e' posicionado na hora de desenhar
+            void face(Sink s, int x, int y, int z, int wx, int wz, int d, int t) {
+                int c = (d == 2) ? COR[t][0] : COR[t][1];
+                boolean w = (t == WATER);
+                float hs = w ? 1f : 0.92f + 0.08f * (((wx * 73856093) ^ (y * 19349663) ^ (wz * 83492791)) & 7) / 7f;
+                float f = SH[d] * hs;
+                byte r = (byte) (((c >> 16) & 255) * f);
+                byte gg = (byte) (((c >> 8) & 255) * f);
+                byte bb = (byte) ((c & 255) * f);
+                byte a = (byte) (w ? 160 : 255);
+                float[] k = CORN[d];
+                for (int i = 0; i < 6; i++) {
+                    int o = ORDER[i] * 3;
+                    float vy2 = k[o + 1];
+                    if (w && vy2 > 0.5f) vy2 -= 0.1f; // superficie da agua um pouco mais baixa
+                    s.vert(x + k[o], y + vy2, z + k[o + 2], r, gg, bb, a);
+                }
+            }
+
+            void build(Chunk c, Chunk w, Chunk e, Chunk n, Chunk s) {
+                cW = w; cE = e; cN = n; cS = s;
+                so.reset();
+                sw.reset();
+                final byte[] b = c.b;
+                int ox = c.cx * CS, oz = c.cz * CS;
+                int top = c.maxY;
+                for (int y = 0; y <= top; y++) {
+                    for (int z = 0; z < CS; z++) {
+                        for (int x = 0; x < CS; x++) {
+                            int t = b[(y * CS + z) * CS + x];
+                            if (t == 0) continue;
+                            boolean wt = (t == WATER);
+                            for (int d = 0; d < 6; d++) {
+                                int q = nb(c, x + DX[d], y + DY[d], z + DZ[d]);
+                                boolean show = wt ? (q == AIR) : (q == AIR || q == WATER);
+                                if (show) face(wt ? sw : so, x, y, z, ox + x, oz + z, d, t);
+                            }
+                        }
+                    }
+                }
+                mo = so.build();
+                mw = sw.build();
+            }
+        }
+
+        // ---------- threads ----------
+        final class Worker extends Thread {
+            final Gen g = new Gen();
+            final Mesher m = new Mesher();
+            Worker(int i) { setName("chunk-" + i); setDaemon(true); }
+            public void run() {
+                while (!stop) {
+                    Job j;
+                    try {
+                        j = jobs.take();
+                    } catch (InterruptedException ex) {
+                        return;
+                    }
+                    if (j.world != world) continue; // mundo velho, ignora
+                    Res r = new Res();
+                    r.gen = j.gen;
+                    r.world = j.world;
+                    r.cx = j.cx;
+                    r.cz = j.cz;
+                    r.c = j.c;
+                    r.version = -1;
+                    try {
+                        if (j.gen) {
+                            g.noise = j.noise;
+                            r.c = g.generate(j.cx, j.cz);
+                        } else {
+                            m.build(j.c, j.w, j.e, j.n, j.s);
+                            r.mo = m.mo;
+                            r.mw = m.mw;
+                            r.version = j.version;
+                        }
+                    } catch (Throwable t) {
+                        if (j.gen) r.c = null;
+                        r.mo = null;
+                        r.mw = null;
+                        r.version = -1;
+                    }
+                    results.add(r);
+                }
+            }
+        }
+
         // ---------- estado do mundo ----------
         final HashMap<Long, Chunk> chunks = new HashMap<Long, Chunk>();
         final HashMap<Long, byte[]> saved = new HashMap<Long, byte[]>(); // chunks editados que foram descarregados
         final ArrayList<Chunk> urgentList = new ArrayList<Chunk>();
+        final HashSet<Long> pendingGen = new HashSet<Long>();
+        final LinkedBlockingQueue<Job> jobs = new LinkedBlockingQueue<Job>();
+        final ConcurrentLinkedQueue<Res> results = new ConcurrentLinkedQueue<Res>();
+        Worker[] workers;
+        volatile boolean stop;
+        volatile int world;
+        int meshInFlight;
         Noise noise = new Noise(1);
-        final Col col = new Col(), tcol = new Col();
-        final Sink so = new Sink(), sw = new Sink();
-        Chunk cW, cE, cN, cS;           // vizinhos do chunk sendo montado
-        Chunk lchunk;                   // cache do ultimo chunk acessado
+        final Gen gen = new Gen();            // usado so na thread do GL (spawn)
+        final Mesher mesher = new Mesher();   // usado so na thread do GL (edicoes)
+        Chunk lchunk;                         // cache do ultimo chunk acessado
         int lcx, lcz;
         int lastPcx, lastPcz;
         boolean loadDone, wasUnder;
         volatile int chunkCount;
         boolean inited = false;
+
+        // culling
+        float aspect = 1.78f;
+        final float[] fnx = new float[5], fny = new float[5], fnz = new float[5];
+        final Chunk[] vis = new Chunk[(2 * RENDER_R + 1) * (2 * RENDER_R + 1)];
 
         final FloatBuffer pvb = ByteBuffer.allocateDirect(MP * 3 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         final ByteBuffer pcb = ByteBuffer.allocateDirect(MP * 4).order(ByteOrder.nativeOrder());
@@ -253,6 +506,7 @@ public class MainActivity extends Activity {
         volatile float joyX, joyY, yaw = 0f, pitch = 10f;
         volatile boolean jumpHeld;
         volatile int sel = 0;
+        final int[] slots = new int[HB];      // hotbar: 0 = vazio, senao id do bloco
         final ConcurrentLinkedQueue<Integer> acts = new ConcurrentLinkedQueue<Integer>();
 
         float px, py, pz, vy;
@@ -268,6 +522,23 @@ public class MainActivity extends Activity {
         static long key(int cx, int cz) { return ((long) cx << 32) | (cz & 0xFFFFFFFFL); }
         static int clamp(int v, int a, int b) { return v < a ? a : (v > b ? b : v); }
 
+        void startWorkers() {
+            if (workers != null) return;
+            int n = Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() - 1));
+            workers = new Worker[n];
+            for (int i = 0; i < n; i++) {
+                workers[i] = new Worker(i);
+                workers[i].start();
+            }
+        }
+
+        void shutdown() {
+            stop = true;
+            if (workers != null) {
+                for (int i = 0; i < workers.length; i++) workers[i].interrupt();
+            }
+        }
+
         void look(float dx, float dy) {
             float ny = yaw + dx;
             if (ny > 360f) ny -= 360f;
@@ -279,7 +550,7 @@ public class MainActivity extends Activity {
             pitch = np;
         }
 
-        // ---------- acesso aos chunks / blocos ----------
+        // ---------- acesso aos chunks / blocos (so thread do GL) ----------
         Chunk chunk(int cx, int cz) {
             if (lchunk != null && lcx == cx && lcz == cz) return lchunk;
             Chunk c = chunks.get(key(cx, cz));
@@ -298,8 +569,8 @@ public class MainActivity extends Activity {
 
         void markDirty(Chunk c) {
             if (c == null) return;
-            c.dirty = true;
-            if (!c.urgent) { c.urgent = true; urgentList.add(c); }
+            c.version++;
+            if (c.meshed && !c.urgent) { c.urgent = true; urgentList.add(c); }
         }
 
         boolean set(int x, int y, int z, int t) {
@@ -319,137 +590,33 @@ public class MainActivity extends Activity {
             return true;
         }
 
-        // ---------- geracao do terreno ----------
-        void column(int x, int z, Col o) {
-            float cont = noise.fbm(x * 0.005f, z * 0.005f, 3);            // continentes/oceanos
-            float hill = noise.fbm(x * 0.03f + 100f, z * 0.03f - 100f, 4); // colinas
-            float mtn = noise.fbm(x * 0.011f - 300f, z * 0.011f + 300f, 4); // montanhas
-            float temp = noise.fbm(x * 0.0035f + 700f, z * 0.0035f - 700f, 2);
-            float moist = noise.fbm(x * 0.004f - 900f, z * 0.004f + 900f, 2);
-            float m = (mtn - 0.5f) * 6f;
-            if (m < 0f) m = 0f;
-            if (m > 1f) m = 1f;
-            float h = SEA + 3 + (cont - 0.5f) * 36f + (hill - 0.5f) * 14f + m * m * 36f;
-            int hi = clamp((int) h, 2, SY - 14);
-            int biome = 0;                                    // 0 planicie, 1 floresta, 2 deserto
-            if (temp > 0.56f && moist < 0.5f) biome = 2;
-            else if (moist > 0.52f) biome = 1;
-            o.h = hi;
-            o.m = m;
-            o.biome = biome;
-            if (hi <= SEA + 1) { o.top = SAND; o.sub = SAND; }
-            else if (biome == 2 && m < 0.3f) { o.top = SAND; o.sub = SAND; }
-            else if (hi >= SNOW_Y) { o.top = SNOW; o.sub = STONE; }
-            else if (m > 0.35f && hi > SEA + 12) { o.top = STONE; o.sub = STONE; }
-            else { o.top = GRASS; o.sub = DIRT; }
-        }
-
-        // cavernas: onde dois campos de ruido ficam perto de 0.5 ao mesmo tempo (tuneis)
-        boolean carve(int x, int y, int z) {
-            float a = noise.v3(x * 0.055f, y * 0.08f, z * 0.055f);
-            if (Math.abs(a - 0.5f) > 0.035f) return false;
-            float b = noise.v3(x * 0.055f + 200f, y * 0.08f + 200f, z * 0.055f + 200f);
-            return Math.abs(b - 0.5f) < 0.035f;
-        }
-
-        void put(Chunk c, int ox, int oz, int wx, int y, int wz, int t) {
-            int lx = wx - ox, lz = wz - oz;
-            if (lx < 0 || lx >= CS || lz < 0 || lz >= CS || y < 0 || y >= SY) return;
-            int i = (y * CS + lz) * CS + lx;
-            int cur = c.b[i];
-            if (cur == AIR || (t == WOOD && cur == LEAF)) c.b[i] = (byte) t;
-        }
-
-        void tree(Chunk c, int ox, int oz, int tx, int tz, int h) {
-            int th = 4 + (noise.hash(tx, 31, tz) & 1);
-            for (int dy = th - 1; dy <= th + 1; dy++) {
-                int r = (dy == th + 1) ? 1 : 2;
-                for (int dx = -r; dx <= r; dx++) {
-                    for (int dz = -r; dz <= r; dz++) {
-                        if (r == 2 && Math.abs(dx) == 2 && Math.abs(dz) == 2) continue;
-                        put(c, ox, oz, tx + dx, h + dy, tz + dz, LEAF);
-                    }
-                }
-            }
-            for (int k = 1; k <= th; k++) put(c, ox, oz, tx, h + k, tz, WOOD);
-        }
-
-        void cactus(Chunk c, int ox, int oz, int tx, int tz, int h) {
-            int ch = 2 + (noise.hash(tx, 55, tz) & 1);
-            for (int k = 1; k <= ch; k++) put(c, ox, oz, tx, h + k, tz, CACTUS);
-        }
-
-        // arvores/cactos sao decididos so pela posicao (seed), entao
-        // cada chunk calcula as arvores dos vizinhos que invadem ele (sem emenda)
-        void decorate(Chunk c, int ox, int oz) {
-            for (int tz = oz - 2; tz < oz + CS + 2; tz++) {
-                for (int tx = ox - 2; tx < ox + CS + 2; tx++) {
-                    float r = noise.rand(tx, 9001, tz);
-                    if (r > 0.05f) continue;
-                    column(tx, tz, tcol);
-                    if (tcol.h <= SEA + 1) continue;
-                    if (tcol.top == SAND) {
-                        if (tcol.biome == 2 && r < 0.008f) cactus(c, ox, oz, tx, tz, tcol.h);
-                        continue;
-                    }
-                    if (tcol.top != GRASS) continue;
-                    float dens = (tcol.biome == 1) ? 0.05f : 0.006f;
-                    if (r < dens) tree(c, ox, oz, tx, tz, tcol.h);
-                }
-            }
-        }
-
-        Chunk generate(int cx, int cz) {
-            byte[] b = new byte[CS * SY * CS];
-            Chunk c = new Chunk(cx, cz, b);
-            int ox = cx * CS, oz = cz * CS;
-            for (int lz = 0; lz < CS; lz++) {
-                for (int lx = 0; lx < CS; lx++) {
-                    int x = ox + lx, z = oz + lz;
-                    column(x, z, col);
-                    int h = col.h;
-                    for (int y = 0; y <= h; y++) {
-                        int t;
-                        if (y == 0) t = STONE;
-                        else if (y == h) t = col.top;
-                        else if (y >= h - 3) t = col.sub;
-                        else {
-                            t = STONE;
-                            if (y < 40 && noise.rand(x, y + 5000, z) < 0.012f) t = ORE;
-                        }
-                        if (y >= 2 && y <= h - 2 && carve(x, y, z)) continue;
-                        b[(y * CS + lz) * CS + lx] = (byte) t;
-                    }
-                    for (int y = h + 1; y <= SEA; y++) b[(y * CS + lz) * CS + lx] = (byte) WATER;
-                }
-            }
-            decorate(c, ox, oz);
-            c.calcMaxY();
-            return c;
-        }
-
-        Chunk loadChunk(int cx, int cz) {
-            long k = key(cx, cz);
-            byte[] s = saved.remove(k);
-            Chunk c;
-            if (s != null) {
-                c = new Chunk(cx, cz, s);
-                c.modified = true;
-                c.calcMaxY();
-            } else {
-                c = generate(cx, cz);
-            }
-            chunks.put(k, c);
+        // coloca um chunk pronto no mundo e avisa os vizinhos que ja tinham malha
+        void addChunk(Chunk c) {
+            chunks.put(key(c.cx, c.cz), c);
             Chunk n;
-            if ((n = chunk(cx - 1, cz)) != null && n.meshed) n.dirty = true;
-            if ((n = chunk(cx + 1, cz)) != null && n.meshed) n.dirty = true;
-            if ((n = chunk(cx, cz - 1)) != null && n.meshed) n.dirty = true;
-            if ((n = chunk(cx, cz + 1)) != null && n.meshed) n.dirty = true;
-            return c;
+            if ((n = chunk(c.cx - 1, c.cz)) != null && n.meshed) n.version++;
+            if ((n = chunk(c.cx + 1, c.cz)) != null && n.meshed) n.version++;
+            if ((n = chunk(c.cx, c.cz - 1)) != null && n.meshed) n.version++;
+            if ((n = chunk(c.cx, c.cz + 1)) != null && n.meshed) n.version++;
+        }
+
+        void meshNow(Chunk c) {
+            mesher.build(c, chunk(c.cx - 1, c.cz), chunk(c.cx + 1, c.cz),
+                    chunk(c.cx, c.cz - 1), chunk(c.cx, c.cz + 1));
+            c.mo = mesher.mo;
+            c.mw = mesher.mw;
+            c.meshed = true;
+            c.meshVer = c.version;
         }
 
         void newWorld() {
+            world++; // invalida tudo que as threads ainda estao fazendo
+            jobs.clear();
+            results.clear();
+            pendingGen.clear();
+            meshInFlight = 0;
             noise = new Noise(rnd.nextInt());
+            gen.noise = noise;
             chunks.clear();
             saved.clear();
             urgentList.clear();
@@ -458,24 +625,21 @@ public class MainActivity extends Activity {
             int sx = 0, sz = 0;
             for (int i = 0; i < 3000; i++) {
                 int x = (int) (Math.cos(i * 0.7) * i * 0.6), z = (int) (Math.sin(i * 0.7) * i * 0.6);
-                column(x, z, col);
-                if (col.h > SEA + 2 && col.top != STONE && col.top != SNOW) { sx = x; sz = z; break; }
+                gen.column(x, z, gen.col);
+                if (gen.col.h > SEA + 2 && gen.col.top != STONE && gen.col.top != SNOW) { sx = x; sz = z; break; }
             }
             int pcx = sx >> 4, pcz = sz >> 4;
+            // so o comecinho e' gerado na hora, o resto vem pelas threads
             for (int dz = -2; dz <= 2; dz++)
                 for (int dx = -2; dx <= 2; dx++)
-                    loadChunk(pcx + dx, pcz + dz);
-            for (int dz = -1; dz <= 1; dz++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    Chunk c = chunk(pcx + dx, pcz + dz);
-                    buildMesh(c);
-                    c.dirty = false;
-                }
-            }
-            column(sx, sz, col);
+                    addChunk(gen.generate(pcx + dx, pcz + dz));
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++)
+                    meshNow(chunk(pcx + dx, pcz + dz));
+            gen.column(sx, sz, gen.col);
             px = sx + 0.5f;
             pz = sz + 0.5f;
-            py = Math.max(col.h, SEA) + 1f;
+            py = Math.max(gen.col.h, SEA) + 1f;
             while (collides(px, py, pz) && py < SY - 3) py += 1f; // caso tenha arvore no spawn
             vy = 0f;
             fall = false;
@@ -486,7 +650,7 @@ public class MainActivity extends Activity {
             loadDone = false;
         }
 
-        // ---------- carrega / descarrega / monta malhas ----------
+        // ---------- carrega / descarrega / manda pras threads ----------
         void updateChunks() {
             int pcx = ((int) Math.floor(px)) >> 4, pcz = ((int) Math.floor(pz)) >> 4;
             if (pcx != lastPcx || pcz != lastPcz) {
@@ -504,33 +668,75 @@ public class MainActivity extends Activity {
                     }
                 }
             }
-            if (!loadDone) {
-                int budget = GEN_BUDGET;
-                for (int i = 0; i < OFFS.length && budget > 0; i++) {
-                    int cx = pcx + OFFS[i][0], cz = pcz + OFFS[i][1];
-                    if (chunk(cx, cz) == null) {
-                        loadChunk(cx, cz);
-                        budget--;
+
+            // 1) resultados que as threads terminaram
+            Res r;
+            while ((r = results.poll()) != null) {
+                if (r.world != world) continue;
+                if (r.gen) {
+                    pendingGen.remove(key(r.cx, r.cz));
+                    if (r.c == null) continue;
+                    if (Math.max(Math.abs(r.cx - pcx), Math.abs(r.cz - pcz)) > LOAD_R + 1) continue;
+                    if (chunk(r.cx, r.cz) != null) continue;
+                    addChunk(r.c);
+                } else {
+                    meshInFlight--;
+                    Chunk c = r.c;
+                    c.meshing = false;
+                    // se o chunk mudou enquanto montava, joga fora (ele ja vai ser refeito)
+                    if (c.loaded && r.version == c.version) {
+                        c.mo = r.mo;
+                        c.mw = r.mw;
+                        c.meshed = true;
+                        c.meshVer = r.version;
                     }
                 }
-                if (budget > 0) loadDone = true;
             }
-            // edicoes: remonta na hora
+
+            // 2) pede os chunks que faltam, do mais perto pro mais longe
+            if (!loadDone) {
+                boolean missing = false;
+                for (int i = 0; i < OFFS.length; i++) {
+                    int cx = pcx + OFFS[i][0], cz = pcz + OFFS[i][1];
+                    if (chunk(cx, cz) != null) continue;
+                    long k = key(cx, cz);
+                    byte[] s = saved.remove(k);
+                    if (s != null) { // editado antes: volta direto da memoria
+                        Chunk c = new Chunk(cx, cz, s);
+                        c.modified = true;
+                        c.calcMaxY();
+                        addChunk(c);
+                        continue;
+                    }
+                    missing = true;
+                    if (pendingGen.contains(k)) continue;
+                    if (pendingGen.size() >= MAX_GEN) break;
+                    Job j = new Job();
+                    j.gen = true;
+                    j.world = world;
+                    j.noise = noise;
+                    j.cx = cx;
+                    j.cz = cz;
+                    pendingGen.add(k);
+                    jobs.add(j);
+                }
+                if (!missing) loadDone = true;
+            }
+
+            // 3) edicoes: remonta na hora, aqui mesmo (pra nao ter delay ao quebrar/por bloco)
             for (int i = 0; i < urgentList.size(); i++) {
                 Chunk c = urgentList.get(i);
                 c.urgent = false;
-                if (c.loaded && c.meshed) {
-                    buildMesh(c);
-                    c.dirty = false;
-                }
+                if (c.loaded && c.meshed) meshNow(c);
             }
             urgentList.clear();
-            // o resto: os mais perto primeiro, so se os 4 vizinhos ja existem
-            for (int n = 0; n < MESH_BUDGET; n++) {
+
+            // 4) manda montar malha dos chunks que precisam, os mais perto primeiro
+            while (meshInFlight < MAX_MESH) {
                 Chunk best = null;
                 int bd = Integer.MAX_VALUE;
                 for (Chunk c : chunks.values()) {
-                    if (!c.dirty) continue;
+                    if (!c.needsMesh() || c.meshing) continue;
                     int dx = c.cx - pcx, dz = c.cz - pcz;
                     if (Math.max(Math.abs(dx), Math.abs(dz)) > RENDER_R) continue;
                     int d = dx * dx + dz * dz;
@@ -541,70 +747,50 @@ public class MainActivity extends Activity {
                     bd = d;
                 }
                 if (best == null) break;
-                buildMesh(best);
-                best.dirty = false;
+                Job j = new Job();
+                j.gen = false;
+                j.world = world;
+                j.c = best;
+                j.w = chunk(best.cx - 1, best.cz);
+                j.e = chunk(best.cx + 1, best.cz);
+                j.n = chunk(best.cx, best.cz - 1);
+                j.s = chunk(best.cx, best.cz + 1);
+                j.version = best.version;
+                best.meshing = true;
+                meshInFlight++;
+                jobs.add(j);
             }
             chunkCount = chunks.size();
         }
 
-        // ---------- mesh ----------
-        int nb(Chunk c, int x, int y, int z) {
-            if (y < 0) return STONE;
-            if (y >= SY) return AIR;
-            Chunk t = c;
-            if (x < 0) { t = cW; x = 15; }
-            else if (x > 15) { t = cE; x = 0; }
-            if (z < 0) { t = cN; z = 15; }
-            else if (z > 15) { t = cS; z = 0; }
-            if (t == null) return AIR;
-            return t.b[(y * CS + z) * CS + x];
+        // ---------- culling ----------
+        // planos do frustum (esq, dir, cima, baixo, perto), todos passando pelo olho
+        void setupFrustum() {
+            double yr = Math.toRadians(yaw), pr = Math.toRadians(pitch);
+            float sy = (float) Math.sin(yr), cy = (float) Math.cos(yr);
+            float sp = (float) Math.sin(pr), cp = (float) Math.cos(pr);
+            float ffx = sy * cp, ffy = -sp, ffz = -cy * cp;   // frente
+            float rrx = cy, rrz = sy;                         // direita
+            float uux = sy * sp, uuy = cp, uuz = -cy * sp;    // cima
+            float tv = 0.7f * 1.1f;                           // tan(fov/2) vertical + folga
+            float th = tv * aspect;
+            fnx[0] = ffx * th - rrx; fny[0] = ffy * th;        fnz[0] = ffz * th - rrz;
+            fnx[1] = ffx * th + rrx; fny[1] = ffy * th;        fnz[1] = ffz * th + rrz;
+            fnx[2] = ffx * tv - uux; fny[2] = ffy * tv - uuy;  fnz[2] = ffz * tv - uuz;
+            fnx[3] = ffx * tv + uux; fny[3] = ffy * tv + uuy;  fnz[3] = ffz * tv + uuz;
+            fnx[4] = ffx;            fny[4] = ffy;             fnz[4] = ffz;
         }
 
-        // x e z locais (0..15): o chunk e' posicionado na hora de desenhar
-        void face(Sink s, int x, int y, int z, int wx, int wz, int d, int t) {
-            int c = (d == 2) ? COR[t][0] : COR[t][1];
-            boolean w = (t == WATER);
-            float hs = w ? 1f : 0.92f + 0.08f * (((wx * 73856093) ^ (y * 19349663) ^ (wz * 83492791)) & 7) / 7f;
-            float f = SH[d] * hs;
-            byte r = (byte) (((c >> 16) & 255) * f);
-            byte gg = (byte) (((c >> 8) & 255) * f);
-            byte bb = (byte) ((c & 255) * f);
-            byte a = (byte) (w ? 160 : 255);
-            float[] k = CORN[d];
-            for (int i = 0; i < 6; i++) {
-                int o = ORDER[i] * 3;
-                float vy2 = k[o + 1];
-                if (w && vy2 > 0.5f) vy2 -= 0.1f; // superficie da agua um pouco mais baixa
-                s.vert(x + k[o], y + vy2, z + k[o + 2], r, gg, bb, a);
+        // caixa em coordenadas relativas ao olho
+        boolean boxVisible(float x0, float y0, float z0, float x1, float y1, float z1) {
+            for (int i = 0; i < 5; i++) {
+                float nx = fnx[i], ny = fny[i], nz = fnz[i];
+                float x = nx >= 0f ? x1 : x0;
+                float y = ny >= 0f ? y1 : y0;
+                float z = nz >= 0f ? z1 : z0;
+                if (nx * x + ny * y + nz * z < 0f) return false;
             }
-        }
-
-        void buildMesh(Chunk c) {
-            cW = chunk(c.cx - 1, c.cz);
-            cE = chunk(c.cx + 1, c.cz);
-            cN = chunk(c.cx, c.cz - 1);
-            cS = chunk(c.cx, c.cz + 1);
-            so.reset();
-            sw.reset();
-            final byte[] b = c.b;
-            int ox = c.cx * CS, oz = c.cz * CS;
-            for (int y = 0; y <= c.maxY; y++) {
-                for (int z = 0; z < CS; z++) {
-                    for (int x = 0; x < CS; x++) {
-                        int t = b[(y * CS + z) * CS + x];
-                        if (t == 0) continue;
-                        boolean w = (t == WATER);
-                        for (int d = 0; d < 6; d++) {
-                            int n = nb(c, x + DX[d], y + DY[d], z + DZ[d]);
-                            boolean show = w ? (n == AIR) : (n == AIR || n == WATER);
-                            if (show) face(w ? sw : so, x, y, z, ox + x, oz + z, d, t);
-                        }
-                    }
-                }
-            }
-            c.mo = so.build();
-            c.mw = sw.build();
-            c.meshed = true;
+            return true;
         }
 
         // ---------- fisica ----------
@@ -718,12 +904,14 @@ public class MainActivity extends Activity {
         }
 
         void doPlace() {
+            int blk = slots[sel];
+            if (blk <= 0) return; // slot vazio
             if (!raycast()) return;
             int x = hit[3], y = hit[4], z = hit[5];
             int t = get(x, y, z);
             if (t != AIR && t != WATER) return; // inclui chunk nao carregado
             if (overlapsPlayer(x, y, z)) return;
-            set(x, y, z, sel + 1);
+            set(x, y, z, blk);
         }
 
         void spawn(float x, float y, float z, int col) {
@@ -841,6 +1029,9 @@ public class MainActivity extends Activity {
         @Override
         public void onSurfaceCreated(GL10 gl, EGLConfig c) {
             gl.glEnable(GL10.GL_DEPTH_TEST);
+            gl.glEnable(GL10.GL_CULL_FACE);   // nao desenha o lado de tras das faces
+            gl.glCullFace(GL10.GL_BACK);
+            gl.glFrontFace(GL10.GL_CCW);
             gl.glEnable(GL10.GL_FOG);
             gl.glFogf(GL10.GL_FOG_MODE, GL10.GL_LINEAR);
             wasUnder = false;
@@ -848,6 +1039,7 @@ public class MainActivity extends Activity {
             gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
             gl.glEnableClientState(GL10.GL_COLOR_ARRAY);
             gl.glHint(GL10.GL_PERSPECTIVE_CORRECTION_HINT, GL10.GL_FASTEST);
+            startWorkers();
             if (!inited) {
                 newWorld();
                 inited = true;
@@ -862,7 +1054,8 @@ public class MainActivity extends Activity {
             gl.glLoadIdentity();
             float near = 0.15f;
             float top = near * 0.7f;
-            float right = top * ((float) w / (float) h);
+            aspect = (float) w / (float) h;
+            float right = top * aspect;
             gl.glFrustumf(-right, right, -top, top, near, FAR);
         }
 
@@ -896,13 +1089,18 @@ public class MainActivity extends Activity {
             gl.glRotatef(pitch, 1f, 0f, 0f);
             gl.glRotatef(yaw, 0f, 1f, 0f);
 
-            // direcao da camera (pra descartar chunks que estao atras)
-            double yr = Math.toRadians(yaw), pr = Math.toRadians(pitch);
-            float dx = (float) (Math.sin(yr) * Math.cos(pr));
-            float dy = (float) (-Math.sin(pr));
-            float dz = (float) (-Math.cos(yr) * Math.cos(pr));
+            // quais chunks aparecem na tela (frustum culling)
+            setupFrustum();
             float ey = py + EYE;
             int pcx = ((int) Math.floor(px)) >> 4, pcz = ((int) Math.floor(pz)) >> 4;
+            int nvis = 0;
+            for (Chunk c : chunks.values()) {
+                if (c.mo == null && c.mw == null) continue;
+                if (Math.abs(c.cx - pcx) > RENDER_R || Math.abs(c.cz - pcz) > RENDER_R) continue;
+                float x0 = c.cx * CS - px, z0 = c.cz * CS - pz;
+                if (!boxVisible(x0, -ey, z0, x0 + CS, c.maxY + 1 - ey, z0 + CS)) continue;
+                if (nvis < vis.length) vis[nvis++] = c;
+            }
 
             for (int pass = 0; pass < 2; pass++) {
                 if (pass == 1) { // agua: translucida, depois de tudo opaco
@@ -910,14 +1108,10 @@ public class MainActivity extends Activity {
                     gl.glBlendFunc(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
                     gl.glDepthMask(false);
                 }
-                for (Chunk c : chunks.values()) {
+                for (int i = 0; i < nvis; i++) {
+                    Chunk c = vis[i];
                     Mesh m = (pass == 0) ? c.mo : c.mw;
                     if (m == null) continue;
-                    if (Math.abs(c.cx - pcx) > RENDER_R || Math.abs(c.cz - pcz) > RENDER_R) continue;
-                    float hy = (c.maxY + 1) * 0.5f;
-                    float rx = c.cx * CS + 8f - px, ry = hy - ey, rz = c.cz * CS + 8f - pz;
-                    float rad = (float) Math.sqrt(128f + hy * hy);
-                    if (rx * dx + ry * dy + rz * dz < -rad) continue;
                     gl.glPushMatrix();
                     gl.glTranslatef(c.cx * CS - px, -ey, c.cz * CS - pz);
                     gl.glVertexPointer(3, GL10.GL_FLOAT, 0, m.v);
@@ -938,6 +1132,10 @@ public class MainActivity extends Activity {
 
     // =====================================================================
     static class Hud extends View {
+        // itens do inventario criativo (0 = limpar slot)
+        static final int[] INV = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0};
+        static final int COLS = 6, ROWS = 2;
+
         final Game g;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         final Handler h = new Handler();
@@ -945,8 +1143,8 @@ public class MainActivity extends Activity {
         final float[] lx = new float[16], ly = new float[16], ax = new float[16], ay = new float[16];
         final boolean[] moved = new boolean[16], done = new boolean[16];
         final Runnable[] lp = new Runnable[16];
-        final RectF novo = new RectF(), rr = new RectF();
-        boolean joyOn;
+        final RectF novo = new RectF(), inv = new RectF(), panel = new RectF(), rr = new RectF(), cell = new RectF();
+        boolean joyOn, invOpen;
         float joyCx, joyCy, joyKx, joyKy;
 
         Hud(Context c, Game game) {
@@ -971,20 +1169,42 @@ public class MainActivity extends Activity {
         float jcx() { return getWidth() - getHeight() * 0.2f; }
         float jcy() { return getHeight() - getHeight() * 0.26f; }
         float hs() { return getHeight() * 0.105f; }
-        float hl() { float s = hs(); return (getWidth() - (7 * s + 6 * s * 0.15f)) / 2f; }
+        float hl() { float s = hs(); return (getWidth() - (Game.HB * s + (Game.HB - 1) * s * 0.15f)) / 2f; }
         float ht() { return getHeight() - hs() - getHeight() * 0.035f; }
 
         void layout() {
             float W = getWidth(), H = getHeight();
             novo.set(W - H * 0.38f, H * 0.02f, W - H * 0.02f, H * 0.12f);
+            inv.set(W - H * 0.60f, H * 0.02f, W - H * 0.40f, H * 0.12f);
+            float pw = Math.min(W * 0.8f, H * 1.6f), ph = H * 0.62f;
+            panel.set((W - pw) / 2f, H * 0.15f, (W + pw) / 2f, H * 0.15f + ph);
         }
 
         int hotHit(float x, float y) {
             float s = hs(), l = hl(), t = ht();
             if (y < t || y > t + s) return -1;
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < Game.HB; i++) {
                 float x0 = l + i * s * 1.15f;
                 if (x >= x0 && x <= x0 + s) return i;
+            }
+            return -1;
+        }
+
+        void cellRect(int i, RectF out) {
+            float H = getHeight();
+            float pad = H * 0.03f, title = H * 0.07f;
+            float cw = (panel.width() - pad * (COLS + 1)) / COLS;
+            float ch = (panel.height() - title - pad * (ROWS + 1)) / ROWS;
+            int cx = i % COLS, cy = i / COLS;
+            float x0 = panel.left + pad + cx * (cw + pad);
+            float y0 = panel.top + title + pad + cy * (ch + pad);
+            out.set(x0, y0, x0 + cw, y0 + ch);
+        }
+
+        int invHit(float x, float y) {
+            for (int i = 0; i < INV.length; i++) {
+                cellRect(i, cell);
+                if (cell.contains(x, y)) return i;
             }
             return -1;
         }
@@ -999,9 +1219,10 @@ public class MainActivity extends Activity {
             moved[id] = false;
             done[id] = false;
             ax[id] = x; ay[id] = y; lx[id] = x; ly[id] = y;
-            if (dist(x, y, jcx(), jcy()) < jr() * 1.25f) {
-                role[id] = 3;
-                g.jumpHeld = true;
+            if (inv.contains(x, y)) {
+                role[id] = 4;
+                done[id] = true;
+                invOpen = !invOpen;
                 return;
             }
             if (novo.contains(x, y)) {
@@ -1015,6 +1236,19 @@ public class MainActivity extends Activity {
                 role[id] = 4;
                 done[id] = true;
                 g.sel = hb;
+                return;
+            }
+            if (invOpen) { // com o inventario aberto so mexe nele
+                role[id] = 4;
+                done[id] = true;
+                int ci = invHit(x, y);
+                if (ci >= 0) g.slots[g.sel] = INV[ci];
+                else if (!panel.contains(x, y)) invOpen = false;
+                return;
+            }
+            if (dist(x, y, jcx(), jcy()) < jr() * 1.25f) {
+                role[id] = 3;
+                g.jumpHeld = true;
                 return;
             }
             if (x < getWidth() * 0.45f) {
@@ -1094,6 +1328,28 @@ public class MainActivity extends Activity {
             return true;
         }
 
+        // icone do bloco: faixa de cima = topo, resto = lado
+        void drawBlock(Canvas c, int b, float x, float y, float w, float hh) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Game.COR[b][0] | 0xFF000000);
+            c.drawRect(x, y, x + w, y + hh * 0.35f, p);
+            p.setColor(Game.COR[b][1] | 0xFF000000);
+            c.drawRect(x, y + hh * 0.35f, x + w, y + hh, p);
+        }
+
+        void button(Canvas c, RectF r, String label, float H, boolean on) {
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(on ? 0xAA3A7A3A : 0x66000000);
+            c.drawRoundRect(r, H * 0.02f, H * 0.02f, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setColor(0xCCFFFFFF);
+            c.drawRoundRect(r, H * 0.02f, H * 0.02f, p);
+            p.setStyle(Paint.Style.FILL);
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setTextSize(H * 0.04f);
+            c.drawText(label, r.centerX(), r.centerY() + H * 0.014f, p);
+        }
+
         @Override
         protected void onDraw(Canvas c) {
             super.onDraw(c);
@@ -1139,33 +1395,75 @@ public class MainActivity extends Activity {
             p.setTextAlign(Paint.Align.CENTER);
             p.setTextSize(H * 0.04f);
             c.drawText("PULA", jcx(), jcy() + H * 0.014f, p);
-            // novo mundo
-            p.setColor(0x66000000);
-            c.drawRoundRect(novo, H * 0.02f, H * 0.02f, p);
-            p.setStyle(Paint.Style.STROKE);
-            p.setColor(0xCCFFFFFF);
-            c.drawRoundRect(novo, H * 0.02f, H * 0.02f, p);
-            p.setStyle(Paint.Style.FILL);
-            p.setTextSize(H * 0.04f);
-            c.drawText("NOVO MUNDO", novo.centerX(), novo.centerY() + H * 0.014f, p);
-            // hotbar
+            // botoes de cima
+            button(c, novo, "NOVO MUNDO", H, false);
+            button(c, inv, "INV", H, invOpen);
+
+            // inventario criativo
+            if (invOpen) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0x66000000);
+                c.drawRect(0, 0, W, H, p);
+                p.setColor(0xEE222222);
+                c.drawRoundRect(panel, H * 0.03f, H * 0.03f, p);
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(H * 0.006f);
+                p.setColor(0xCCFFFFFF);
+                c.drawRoundRect(panel, H * 0.03f, H * 0.03f, p);
+                p.setStyle(Paint.Style.FILL);
+                p.setTextAlign(Paint.Align.CENTER);
+                p.setTextSize(H * 0.035f);
+                c.drawText("CRIATIVO - escolhe um slot la embaixo e toca no bloco", panel.centerX(),
+                        panel.top + H * 0.055f, p);
+                int cur = g.slots[g.sel];
+                for (int i = 0; i < INV.length; i++) {
+                    cellRect(i, cell);
+                    int b = INV[i];
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(0xFF3C3C3C);
+                    c.drawRoundRect(cell, H * 0.015f, H * 0.015f, p);
+                    if (b > 0) {
+                        float ins = cell.width() * 0.2f;
+                        drawBlock(c, b, cell.left + ins, cell.top + ins * 0.5f,
+                                cell.width() - 2f * ins, cell.height() * 0.5f);
+                    }
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(0xFFFFFFFF);
+                    p.setTextAlign(Paint.Align.CENTER);
+                    p.setTextSize(H * 0.03f);
+                    c.drawText(b > 0 ? Game.NOMES[b] : "LIMPAR", cell.centerX(), cell.bottom - H * 0.02f, p);
+                    if (b > 0 && b == cur) {
+                        p.setStyle(Paint.Style.STROKE);
+                        p.setStrokeWidth(H * 0.008f);
+                        p.setColor(0xFFFFFFFF);
+                        c.drawRoundRect(cell, H * 0.015f, H * 0.015f, p);
+                    }
+                }
+            }
+
+            // hotbar (comeca vazia)
             float s = hs(), l = hl(), tp = ht();
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < Game.HB; i++) {
                 float x0 = l + i * s * 1.15f;
                 rr.set(x0, tp, x0 + s, tp + s);
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(Game.COR[i + 1][0] | 0xFF000000);
+                p.setColor(0x99000000);
                 c.drawRoundRect(rr, s * 0.12f, s * 0.12f, p);
+                int b = g.slots[i];
+                if (b > 0) drawBlock(c, b, x0 + s * 0.16f, tp + s * 0.16f, s * 0.68f, s * 0.68f);
                 p.setStyle(Paint.Style.STROKE);
                 p.setStrokeWidth(i == g.sel ? s * 0.1f : s * 0.04f);
                 p.setColor(i == g.sel ? 0xFFFFFFFF : 0x99000000);
                 c.drawRoundRect(rr, s * 0.12f, s * 0.12f, p);
             }
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(0xFFFFFFFF);
-            p.setTextAlign(Paint.Align.CENTER);
-            p.setTextSize(H * 0.035f);
-            c.drawText(Game.NOMES[g.sel], W / 2f, tp - H * 0.015f, p);
+            int held = g.slots[g.sel];
+            if (held > 0) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(0xFFFFFFFF);
+                p.setTextAlign(Paint.Align.CENTER);
+                p.setTextSize(H * 0.035f);
+                c.drawText(Game.NOMES[held], W / 2f, tp - H * 0.015f, p);
+            }
         }
     }
 }
