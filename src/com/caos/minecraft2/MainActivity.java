@@ -83,7 +83,7 @@ public class MainActivity extends Activity {
         static final int MAX_MESH = 4;          // malhas sendo montadas ao mesmo tempo
         static final float FOG_S = 28f, FOG_E = 60f, FAR = 110f;
 
-        static final int MP = 400;
+        static final int MP = 600;
         static final int HB = 9;                // slots da hotbar
         static final float HW = 0.3f, PH = 1.8f, EYE = 1.62f, SPEED = 5.2f;
 
@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
                 PLANKS = 12, COBBLE = 13, BRICK = 14, GLASS = 15, GRAVEL = 16, SANDSTONE = 17,
                 WOOL_W = 18, WOOL_R = 19, WOOL_B = 20, WOOL_G = 21, WOOL_Y = 22, WOOL_K = 23,
                 OBSIDIAN = 24, ICE = 25, COAL = 26, GOLD = 27, DIAMOND = 28, LAMP = 29, BEDROCK = 30;
+        static final int IT_BOMB = 31, IT_TORCH = 32, IT_CLOCK = 33, IT_FEATHER = 34, IT_POTION = 35, IT_HAMMER = 36;
+        static final int NALL = 37;             // blocos + itens (ids 0..36)
         static final int NB = 31;               // quantidade de ids (0..30)
 
         // tiles {topo, lado, baixo} de cada bloco (indices no atlas)
@@ -133,7 +135,8 @@ public class MainActivity extends Activity {
                 "FOLHA", "CAOS", "AGUA", "NEVE", "CACTO", "FERRO", "TABUAS", "PEDREGULHO",
                 "TIJOLO", "VIDRO", "CASCALHO", "ARENITO", "LA BRANCA", "LA VERMELHA", "LA AZUL",
                 "LA VERDE", "LA AMARELA", "LA PRETA", "OBSIDIANA", "GELO", "CARVAO", "OURO",
-                "DIAMANTE", "LAMPADA", "BEDROCK"};
+                "DIAMANTE", "LAMPADA", "BEDROCK",
+                "BOMBA DO CAOS", "TOCHA", "RELOGIO", "PENA", "POCAO", "MARRETA"};
 
         // blocos que escondem a face do vizinho (os outros deixam ver atraves)
         static final boolean[] OPAQUE = new boolean[NB];
@@ -171,6 +174,23 @@ public class MainActivity extends Activity {
         static final float[] FOG_AIR = {0.53f, 0.81f, 0.92f, 1f};
         static final float[] FOG_WATER = {0.08f, 0.22f, 0.45f, 1f};
 
+        // sprite de cada item (mesma ordem dos ids 31..36)
+        static final int[] ITEM_TILE = {Tex.T_BOMB, Tex.T_TORCH, Tex.T_CLOCK, Tex.T_FEATHER, Tex.T_POTION, Tex.T_HAMMER};
+
+        // ---- ceu / dia e noite ----
+        static final float DAY_LEN = 360f;      // segundos de um dia inteiro
+        static final float SKY_D = 100f;        // distancia do sol, da lua e das estrelas
+        static final float TILT = 25f;          // inclinacao da orbita (graus)
+        static final float COS_T = (float) Math.cos(Math.toRadians(TILT));
+        static final float SIN_T = (float) Math.sin(Math.toRadians(TILT));
+        static final int NSTAR = 260;
+        // cor do ceu / cor que multiplica o mundo todo (escurece de noite)
+        static final float[] SKY_DAY = {0.53f, 0.81f, 0.92f}, SKY_SET = {0.96f, 0.58f, 0.38f}, SKY_NIGHT = {0.07f, 0.09f, 0.22f};
+        static final float[] MUL_DAY = {1f, 1f, 1f}, MUL_SET = {1f, 0.82f, 0.72f}, MUL_NIGHT = {0.30f, 0.34f, 0.55f};
+        // pulos do relogio: amanhecer, meio-dia, por do sol, meia-noite
+        static final float[] PRESET = {0f, 0.275f, 0.55f, 0.775f};
+        static final int MB = 8;                // bombas voando ao mesmo tempo
+
         // cor media do bloco (pras particulas)
         static int pcolor(int t) { return Tex.avg(TILE[t][1]); }
 
@@ -201,8 +221,9 @@ public class MainActivity extends Activity {
                     T_BRICK = 16, T_GLASS = 17, T_GRAVEL = 18, T_SS_SIDE = 19, T_SS_TOP = 20,
                     T_WOOL_W = 21, T_WOOL_R = 22, T_WOOL_B = 23, T_WOOL_G = 24, T_WOOL_Y = 25,
                     T_WOOL_K = 26, T_OBSIDIAN = 27, T_ICE = 28, T_COAL = 29, T_GOLD = 30,
-                    T_DIAMOND = 31, T_LAMP = 32, T_BEDROCK = 33;
-            static final int NT = 34, TS = 16, AT = 256;
+                    T_DIAMOND = 31, T_LAMP = 32, T_BEDROCK = 33,
+                    T_BOMB = 34, T_TORCH = 35, T_CLOCK = 36, T_FEATHER = 37, T_POTION = 38, T_HAMMER = 39;
+            static final int NT = 40, TS = 16, AT = 256;
             static final int[] pix = new int[AT * AT];
             static final int[] AVG = new int[NT];
             static final Bitmap[] tiles = new Bitmap[NT];
@@ -329,6 +350,102 @@ public class MainActivity extends Activity {
                 }
             }
 
+            static void box(int t, int x0, int y0, int x1, int y1, int col, int seed) {
+                for (int y = y0; y <= y1; y++)
+                    for (int x = x0; x <= x1; x++)
+                        put(t, x, y, shade(col, 0.88f + n2(x, y, seed) * 0.24f));
+            }
+
+            static void ball(int t, float cx, float cy, float r, int col, int seed) {
+                for (int y = 0; y < TS; y++) {
+                    for (int x = 0; x < TS; x++) {
+                        float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
+                        float d = (float) Math.sqrt(dx * dx + dy * dy);
+                        if (d > r) continue;
+                        float f = 0.85f + n2(x, y, seed) * 0.2f;
+                        if (d > r - 1.2f) f *= 0.7f;                         // borda mais escura
+                        if (dx < 0 && dy < 0 && d < r * 0.7f) f *= 1.25f;    // brilhinho
+                        put(t, x, y, shade(col, f));
+                    }
+                }
+            }
+
+            static void spr(int t, int x, int y, int col) {
+                if (x >= 0 && x < TS && y >= 0 && y < TS) put(t, x, y, 0xFF000000 | col);
+            }
+
+            // sprites 16x16 dos itens (o resto do tile fica transparente)
+            static void itemSprites() {
+                // bomba do caos: bolinha preta com manchas de caos e pavio
+                ball(T_BOMB, 7.5f, 9.5f, 5.6f, 0x2A2A33, 100);
+                spr(T_BOMB, 5, 10, CAOS_PAL[0]);
+                spr(T_BOMB, 9, 8, CAOS_PAL[2]);
+                spr(T_BOMB, 8, 12, CAOS_PAL[0]);
+                spr(T_BOMB, 6, 12, CAOS_PAL[2]);
+                spr(T_BOMB, 10, 11, CAOS_PAL[3]);
+                box(T_BOMB, 6, 3, 9, 4, 0x55555F, 101);
+                spr(T_BOMB, 8, 2, 0x8B6B3A);
+                spr(T_BOMB, 9, 1, 0x8B6B3A);
+                spr(T_BOMB, 10, 1, 0x8B6B3A);
+                spr(T_BOMB, 11, 0, 0xFFE24A);
+                spr(T_BOMB, 12, 0, 0xFF8A20);
+                spr(T_BOMB, 12, 1, 0xFFE24A);
+
+                // tocha: chama em cima, palito embaixo
+                for (int y = 1; y <= 6; y++) {
+                    int x0 = (y == 1 || y == 6) ? 7 : 6, x1 = (y == 1 || y == 6) ? 8 : 9;
+                    int fc = y <= 2 ? 0xFFF29A : (y <= 4 ? 0xFFB02E : 0xFF6A1A);
+                    for (int x = x0; x <= x1; x++) put(T_TORCH, x, y, shade(fc, 0.9f + n2(x, y, 111) * 0.2f));
+                }
+                box(T_TORCH, 7, 7, 8, 14, 0x7A5630, 112);
+
+                // relogio: aro dourado, mostrador claro e ponteiros
+                ball(T_CLOCK, 7.5f, 7.5f, 6.8f, 0xD9A82A, 120);
+                for (int y = 0; y < TS; y++) {
+                    for (int x = 0; x < TS; x++) {
+                        float dx = x + 0.5f - 7.5f, dy = y + 0.5f - 7.5f;
+                        if (Math.sqrt(dx * dx + dy * dy) < 5.2) put(T_CLOCK, x, y, shade(0xF2EEDC, 0.95f + n2(x, y, 121) * 0.08f));
+                    }
+                }
+                spr(T_CLOCK, 7, 3, 0x333333);
+                spr(T_CLOCK, 12, 7, 0x333333);
+                spr(T_CLOCK, 7, 12, 0x333333);
+                spr(T_CLOCK, 3, 7, 0x333333);
+                spr(T_CLOCK, 7, 7, 0x222222);
+                spr(T_CLOCK, 7, 6, 0x222222);
+                spr(T_CLOCK, 7, 5, 0x222222);
+                spr(T_CLOCK, 7, 4, 0x222222);
+                spr(T_CLOCK, 8, 7, 0xC03030);
+                spr(T_CLOCK, 9, 7, 0xC03030);
+                spr(T_CLOCK, 10, 7, 0xC03030);
+
+                // pena: diagonal clarinha com o cabo
+                for (int k = 0; k <= 13; k++) {
+                    int x = 1 + k, y = 14 - k;
+                    int w = Math.min(k, 13 - k) / 3;
+                    for (int d = -w; d <= w; d++) {
+                        int xx = x + d, yy = y + d;
+                        if (xx < 0 || xx > 15 || yy < 0 || yy > 15) continue;
+                        put(T_FEATHER, xx, yy, d == 0 ? shade(0x9A9AA8, 1f) : shade(0xF0F2FA, 0.88f + n2(xx, yy, 130) * 0.16f));
+                    }
+                }
+                spr(T_FEATHER, 0, 15, 0x9A9AA8);
+
+                // pocao de velocidade: frasco ciano com rolha
+                ball(T_POTION, 7.5f, 10f, 5f, 0x30D8E0, 140);
+                box(T_POTION, 6, 2, 9, 5, 0xCFE8F0, 141);
+                box(T_POTION, 6, 0, 9, 1, 0x8A5A2A, 142);
+                spr(T_POTION, 5, 8, 0xFFFFFF);
+                spr(T_POTION, 5, 9, 0xFFFFFF);
+
+                // marreta: cabo de madeira e cabecao de ferro
+                box(T_HAMMER, 7, 6, 8, 15, 0x7A5630, 150);
+                box(T_HAMMER, 2, 1, 13, 6, 0x8A8A92, 151);
+                box(T_HAMMER, 2, 1, 3, 6, 0x5A5A62, 152);
+                box(T_HAMMER, 12, 1, 13, 6, 0x5A5A62, 153);
+                for (int x = 4; x <= 11; x++) spr(T_HAMMER, x, 1, 0xD0D0DA);
+            }
+
             static void build() {
                 for (int y = 0; y < TS; y++) {
                     for (int x = 0; x < TS; x++) {
@@ -442,6 +559,7 @@ public class MainActivity extends Activity {
                 wool(T_WOOL_G, 0x3C8232, 93);
                 wool(T_WOOL_Y, 0xE6C832, 94);
                 wool(T_WOOL_K, 0x1E1E23, 95);
+                itemSprites();
             }
         }
 
@@ -863,6 +981,40 @@ public class MainActivity extends Activity {
         int fx, fy, fz;
         float fallT, caosT;
 
+        // ---- dia e noite ----
+        volatile float dayT = 0.08f;            // 0..1: hora do dia (0 = amanhecer)
+        volatile float skyAng = 0f;             // angulo do sol em radianos (o Hud usa pra mostrar a hora)
+        volatile float speedT;                  // tempo que sobra da pocao de velocidade
+        float sinA, starA;
+        float skyR = 0.53f, skyG = 0.81f, skyB = 0.92f, mulR = 1f, mulG = 1f, mulB = 1f;
+        final float[] star = new float[NSTAR * 3];
+        final FloatBuffer svb = ByteBuffer.allocateDirect(NSTAR * 3 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        final FloatBuffer qb = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        final FloatBuffer fsq = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        {
+            fsq.put(new float[]{-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f});
+            fsq.position(0);
+            Random sr = new Random(77);
+            for (int i = 0; i < NSTAR; i++) {
+                float x, y, z, l;
+                do {
+                    x = (float) sr.nextGaussian();
+                    y = (float) sr.nextGaussian();
+                    z = (float) sr.nextGaussian();
+                    l = (float) Math.sqrt(x * x + y * y + z * z);
+                } while (l < 0.001f);
+                star[i * 3] = x / l;
+                star[i * 3 + 1] = y / l;
+                star[i * 3 + 2] = z / l;
+            }
+        }
+
+        // ---- bombas do caos ----
+        final float[] bpos = new float[MB * 3], bvel = new float[MB * 3], blife = new float[MB];
+        final FloatBuffer bvb = ByteBuffer.allocateDirect(MB * 3 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        final ByteBuffer bcb = ByteBuffer.allocateDirect(MB * 4).order(ByteOrder.nativeOrder());
+        int bnext;
+
         static long key(int cx, int cz) { return ((long) cx << 32) | (cz & 0xFFFFFFFFL); }
         static int clamp(int v, int a, int b) { return v < a ? a : (v > b ? b : v); }
 
@@ -989,6 +1141,9 @@ public class MainActivity extends Activity {
             fall = false;
             caosT = 0f;
             Arrays.fill(plife, 0f);
+            Arrays.fill(blife, 0f);
+            dayT = 0.08f;
+            speedT = 0f;
             lastPcx = pcx;
             lastPcz = pcz;
             loadDone = false;
@@ -1172,7 +1327,7 @@ public class MainActivity extends Activity {
             float fw = -jy, st = jx;
             boolean wet = isWater(px, py + 0.4f, pz);
             boolean head = isWater(px, py + EYE, pz);
-            float spd = wet ? SPEED * 0.6f : SPEED;
+            float spd = (wet ? SPEED * 0.6f : SPEED) * (speedT > 0f ? 1.8f : 1f);
             float mx = (fxx * fw + rx * st) * spd * dt;
             float mz = (fzz * fw + rz * st) * spd * dt;
             if (wet) {
@@ -1238,6 +1393,7 @@ public class MainActivity extends Activity {
         }
 
         void doBreak() {
+            if (slots[sel] == IT_HAMMER) { doHammer(); return; }
             if (!raycast()) return;
             int x = hit[0], y = hit[1], z = hit[2];
             if (y <= 0) return; // bedrock la embaixo nao quebra
@@ -1250,6 +1406,7 @@ public class MainActivity extends Activity {
         void doPlace() {
             int blk = slots[sel];
             if (blk <= 0) return; // slot vazio
+            if (blk >= NB) { useItem(blk); return; } // item: usa em vez de por
             if (!raycast()) return;
             int x = hit[3], y = hit[4], z = hit[5];
             int t = get(x, y, z);
@@ -1275,11 +1432,13 @@ public class MainActivity extends Activity {
             pcol[i] = (r << 16) | (gg << 8) | bb;
         }
 
-        void explode(int cx, int cy, int cz) {
-            for (int dx = -2; dx <= 2; dx++) {
-                for (int dy = -2; dy <= 2; dy++) {
-                    for (int dz = -2; dz <= 2; dz++) {
-                        if (dx * dx + dy * dy + dz * dz > 5) continue;
+        void explode(int cx, int cy, int cz) { explode(cx, cy, cz, 2, 5); }
+
+        void explode(int cx, int cy, int cz, int rng, int r2) {
+            for (int dx = -rng; dx <= rng; dx++) {
+                for (int dy = -rng; dy <= rng; dy++) {
+                    for (int dz = -rng; dz <= rng; dz++) {
+                        if (dx * dx + dy * dy + dz * dz > r2) continue;
                         int x = cx + dx, y = cy + dy, z = cz + dz;
                         if (y <= 0) continue;
                         int t = get(x, y, z);
@@ -1361,9 +1520,301 @@ public class MainActivity extends Activity {
             gl.glDrawArrays(GL10.GL_POINTS, 0, n);
         }
 
+        // ---------- dia e noite ----------
+        static float smooth(float a, float b, float x) {
+            float t = (x - a) / (b - a);
+            if (t < 0f) t = 0f;
+            if (t > 1f) t = 1f;
+            return t * t * (3f - 2f * t);
+        }
+
+        // o dia (55%) passa mais devagar que a noite (45%) pra noite nao enjoar
+        static float angleOf(float t) {
+            final float pi = 3.14159265f;
+            return t < 0.55f ? (t / 0.55f) * pi : pi + ((t - 0.55f) / 0.45f) * pi;
+        }
+
+        void updateTime(float dt) {
+            dayT += dt / DAY_LEN;
+            if (dayT >= 1f) dayT -= 1f;
+            if (speedT > 0f) speedT -= dt;
+        }
+
+        void nextTime() {
+            float n = PRESET[0] + 1f;
+            for (int i = 0; i < PRESET.length; i++) {
+                if (PRESET[i] > dayT + 0.01f) { n = PRESET[i]; break; }
+            }
+            dayT = n >= 1f ? n - 1f : n;
+        }
+
+        // calcula cor do ceu / escuridao do mundo pela altura do sol
+        void computeSky() {
+            float a = angleOf(dayT);
+            skyAng = a;
+            float s = (float) Math.sin(a);
+            sinA = s;
+            float k = s >= 0f ? smooth(0f, 0.35f, s) : smooth(0f, 0.3f, -s);
+            float[] ts = s >= 0f ? SKY_DAY : SKY_NIGHT;
+            float[] tm = s >= 0f ? MUL_DAY : MUL_NIGHT;
+            skyR = SKY_SET[0] + (ts[0] - SKY_SET[0]) * k;
+            skyG = SKY_SET[1] + (ts[1] - SKY_SET[1]) * k;
+            skyB = SKY_SET[2] + (ts[2] - SKY_SET[2]) * k;
+            mulR = MUL_SET[0] + (tm[0] - MUL_SET[0]) * k;
+            mulG = MUL_SET[1] + (tm[1] - MUL_SET[1]) * k;
+            mulB = MUL_SET[2] + (tm[2] - MUL_SET[2]) * k;
+            starA = smooth(0f, 0.3f, -s);
+            if (slots[sel] == IT_TORCH) { // tocha na mao clareia a noite (e deixa quentinho)
+                mulR = Math.max(mulR, mulR + (1f - mulR) * 0.6f);
+                mulG = Math.max(mulG, mulG + (0.88f - mulG) * 0.6f);
+                mulB = Math.max(mulB, mulB + (0.7f - mulB) * 0.6f);
+            }
+        }
+
+        void resetState(GL10 gl) {
+            gl.glEnable(GL10.GL_DEPTH_TEST);
+            gl.glDepthMask(true);
+            gl.glEnable(GL10.GL_CULL_FACE);
+            gl.glEnable(GL10.GL_ALPHA_TEST);
+            gl.glEnable(GL10.GL_FOG);
+            gl.glDisable(GL10.GL_BLEND);
+            gl.glEnableClientState(GL10.GL_COLOR_ARRAY);
+        }
+
+        // multiplica a tela inteira pela cor da noite (dia = 1,1,1 = nao desenha nada)
+        void drawNightOverlay(GL10 gl) {
+            if (mulR > 0.995f && mulG > 0.995f && mulB > 0.995f) return;
+            gl.glDisable(GL10.GL_DEPTH_TEST);
+            gl.glDisable(GL10.GL_FOG);
+            gl.glDisable(GL10.GL_CULL_FACE);
+            gl.glDisable(GL10.GL_ALPHA_TEST);
+            gl.glDisable(GL10.GL_TEXTURE_2D);
+            gl.glDisableClientState(GL10.GL_COLOR_ARRAY);
+            gl.glEnable(GL10.GL_BLEND);
+            gl.glBlendFunc(GL10.GL_ZERO, GL10.GL_SRC_COLOR);
+            gl.glMatrixMode(GL10.GL_PROJECTION);
+            gl.glPushMatrix();
+            gl.glLoadIdentity();
+            gl.glMatrixMode(GL10.GL_MODELVIEW);
+            gl.glPushMatrix();
+            gl.glLoadIdentity();
+            gl.glColor4f(mulR, mulG, mulB, 1f);
+            gl.glVertexPointer(3, GL10.GL_FLOAT, 0, fsq);
+            gl.glDrawArrays(GL10.GL_TRIANGLE_STRIP, 0, 4);
+            gl.glPopMatrix();
+            gl.glMatrixMode(GL10.GL_PROJECTION);
+            gl.glPopMatrix();
+            gl.glMatrixMode(GL10.GL_MODELVIEW);
+            gl.glDisable(GL10.GL_BLEND);
+        }
+
+        // quadrado de lado 2h no plano x = x, centrado em (cy, cz)
+        void quadX(GL10 gl, float x, float cy, float cz, float h) {
+            qb.clear();
+            qb.put(x); qb.put(cy - h); qb.put(cz - h);
+            qb.put(x); qb.put(cy + h); qb.put(cz - h);
+            qb.put(x); qb.put(cy - h); qb.put(cz + h);
+            qb.put(x); qb.put(cy + h); qb.put(cz + h);
+            qb.flip();
+            gl.glVertexPointer(3, GL10.GL_FLOAT, 0, qb);
+            gl.glDrawArrays(GL10.GL_TRIANGLE_STRIP, 0, 4);
+        }
+
+        void starRange(GL10 gl, int from, int to, float size, float sa, float ca) {
+            svb.clear();
+            int n = 0;
+            for (int i = from; i < to; i++) {
+                float x = star[i * 3], y = star[i * 3 + 1], z = star[i * 3 + 2];
+                float yy = (x * sa + y * ca) * COS_T - z * SIN_T; // altura da estrela depois de girar
+                if (yy < 0.02f) continue;                          // abaixo do horizonte
+                svb.put(x * SKY_D); svb.put(y * SKY_D); svb.put(z * SKY_D);
+                n++;
+            }
+            if (n == 0) return;
+            svb.flip();
+            gl.glPointSize(size);
+            gl.glVertexPointer(3, GL10.GL_FLOAT, 0, svb);
+            gl.glDrawArrays(GL10.GL_POINTS, 0, n);
+        }
+
+        // sol, lua e estrelas: desenhados por cima da escuridao da noite, mas atras do terreno (teste de profundidade)
+        void drawSky(GL10 gl, boolean under) {
+            if (under) return;
+            float a = skyAng;
+            float sa = sinA, ca = (float) Math.cos(a);
+            float elev = sa * COS_T;                       // altura do sol no ceu
+            float sunA = smooth(-0.03f, 0.07f, elev);
+            float moonA = smooth(-0.03f, 0.07f, -elev);
+            gl.glDisable(GL10.GL_FOG);
+            gl.glDisable(GL10.GL_CULL_FACE);
+            gl.glDisable(GL10.GL_ALPHA_TEST);
+            gl.glDisable(GL10.GL_TEXTURE_2D);
+            gl.glDisableClientState(GL10.GL_COLOR_ARRAY);
+            gl.glEnable(GL10.GL_DEPTH_TEST);
+            gl.glDepthMask(false);
+            gl.glEnable(GL10.GL_BLEND);
+            gl.glBlendFunc(GL10.GL_SRC_ALPHA, GL10.GL_ONE_MINUS_SRC_ALPHA);
+            gl.glMatrixMode(GL10.GL_MODELVIEW);
+            gl.glPushMatrix();
+            gl.glLoadIdentity();
+            gl.glRotatef(pitch, 1f, 0f, 0f);
+            gl.glRotatef(yaw, 0f, 1f, 0f);
+            gl.glRotatef(TILT, 1f, 0f, 0f);
+            gl.glRotatef((float) Math.toDegrees(a), 0f, 0f, 1f);
+            if (starA > 0.01f) {
+                gl.glColor4f(1f, 1f, 1f, starA);
+                starRange(gl, 0, NSTAR - 40, 3f, sa, ca);
+                gl.glColor4f(0.85f, 0.92f, 1f, starA);
+                starRange(gl, NSTAR - 40, NSTAR, 6f, sa, ca);
+            }
+            if (sunA > 0.01f) {
+                float w = smooth(0f, 0.3f, sa);            // perto do horizonte o sol fica laranja
+                float cg = 0.55f + 0.43f * w, cb = 0.25f + 0.55f * w;
+                gl.glColor4f(1f, cg, cb, 0.22f * sunA);
+                quadX(gl, SKY_D, 0f, 0f, 17f);
+                gl.glColor4f(1f, cg, cb, 0.35f * sunA);
+                quadX(gl, SKY_D, 0f, 0f, 11f);
+                gl.glColor4f(1f, cg, cb, sunA);
+                quadX(gl, SKY_D, 0f, 0f, 6.5f);
+                gl.glColor4f(1f, 1f, 0.92f, sunA);
+                quadX(gl, SKY_D, 0f, 0f, 4.2f);
+            }
+            if (moonA > 0.01f) {
+                gl.glColor4f(0.86f, 0.9f, 1f, moonA);
+                quadX(gl, -SKY_D, 0f, 0f, 5.5f);
+                gl.glColor4f(0.66f, 0.7f, 0.84f, moonA);
+                quadX(gl, -SKY_D, 1.8f, 1.5f, 1.4f);
+                quadX(gl, -SKY_D, -2f, -1.2f, 1.1f);
+                quadX(gl, -SKY_D, -0.8f, 2.6f, 0.9f);
+            }
+            gl.glPopMatrix();
+            gl.glDepthMask(true);
+            gl.glDisable(GL10.GL_BLEND);
+        }
+
+        // ---------- itens ----------
+        void useItem(int it) {
+            if (it == IT_BOMB) {
+                throwBomb();
+            } else if (it == IT_CLOCK) {
+                nextTime();
+            } else if (it == IT_FEATHER) {
+                vy = 15f;
+                onGround = false;
+                for (int i = 0; i < 10; i++) spawn(px, py + 0.1f, pz, 0xF4F4FF);
+            } else if (it == IT_POTION) {
+                speedT = 25f;
+                for (int i = 0; i < 14; i++) spawn(px, py + 1f, pz, 0x30D8E0);
+            }
+            // a tocha nao faz nada ao tocar: so clareia a noite enquanto esta na mao
+        }
+
+        void doHammer() {
+            if (!raycast()) return;
+            int x = hit[0], y = hit[1], z = hit[2];
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dz = -1; dz <= 1; dz++)
+                        breakOne(x + dx, y + dy, z + dz, 4);
+        }
+
+        void breakOne(int x, int y, int z, int parts) {
+            if (y <= 0) return; // bedrock nao quebra
+            int t = get(x, y, z);
+            if (t <= 0 || t == WATER) return;
+            set(x, y, z, AIR);
+            for (int i = 0; i < parts; i++) spawn(x + 0.5f, y + 0.5f, z + 0.5f, pcolor(t));
+        }
+
+        void throwBomb() {
+            double yr = Math.toRadians(yaw), pr = Math.toRadians(pitch);
+            float dx = (float) (Math.sin(yr) * Math.cos(pr));
+            float dy = (float) (-Math.sin(pr));
+            float dz = (float) (-Math.cos(yr) * Math.cos(pr));
+            int i = bnext;
+            bnext = (bnext + 1) % MB;
+            bpos[i * 3] = px + dx * 0.6f;
+            bpos[i * 3 + 1] = py + EYE + dy * 0.6f - 0.1f;
+            bpos[i * 3 + 2] = pz + dz * 0.6f;
+            bvel[i * 3] = dx * 17f;
+            bvel[i * 3 + 1] = dy * 17f + 3f;
+            bvel[i * 3 + 2] = dz * 17f;
+            blife[i] = 2.6f;
+        }
+
+        void blast(int cx, int cy, int cz) {
+            explode(cx, cy, cz, 3, 10);
+            // a explosao joga o jogador pra cima (rocket jump)
+            float dx = px - (cx + 0.5f), dy = py + 0.9f - (cy + 0.5f), dz = pz - (cz + 0.5f);
+            float d = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (d < 7f) {
+                vy = Math.max(vy, 14f * (1f - d / 7f));
+                onGround = false;
+            }
+        }
+
+        void updateBombs(float dt) {
+            for (int i = 0; i < MB; i++) {
+                if (blife[i] <= 0f) continue;
+                blife[i] -= dt;
+                bvel[i * 3 + 1] -= 18f * dt;
+                float mx = bvel[i * 3] * dt, my = bvel[i * 3 + 1] * dt, mz = bvel[i * 3 + 2] * dt;
+                int steps = (int) Math.ceil(Math.max(Math.abs(mx), Math.max(Math.abs(my), Math.abs(mz))) / 0.3f);
+                if (steps < 1) steps = 1;
+                int res = 0; // 0 voando, 1 explode, 2 some (caiu em chunk que nao existe)
+                for (int s = 0; s < steps; s++) {
+                    float nx = bpos[i * 3] + mx / steps;
+                    float ny = bpos[i * 3 + 1] + my / steps;
+                    float nz = bpos[i * 3 + 2] + mz / steps;
+                    int t = get((int) Math.floor(nx), (int) Math.floor(ny), (int) Math.floor(nz));
+                    if (t == -1) { res = 2; break; }
+                    if (t != AIR && t != WATER) { res = 1; break; }
+                    bpos[i * 3] = nx;
+                    bpos[i * 3 + 1] = ny;
+                    bpos[i * 3 + 2] = nz;
+                }
+                if (res == 0 && blife[i] <= 0f) res = 1; // pavio acabou
+                if (res != 0) {
+                    blife[i] = 0f;
+                    if (res == 1) {
+                        blast((int) Math.floor(bpos[i * 3]), (int) Math.floor(bpos[i * 3 + 1]), (int) Math.floor(bpos[i * 3 + 2]));
+                    }
+                } else {
+                    // rastro de faiscas
+                    spawn(bpos[i * 3], bpos[i * 3 + 1], bpos[i * 3 + 2], rnd.nextFloat() < 0.5f ? pcolor(CAOS) : 0xFFB040);
+                }
+            }
+        }
+
+        void drawBombs(GL10 gl) {
+            int n = 0;
+            bvb.clear();
+            bcb.clear();
+            for (int i = 0; i < MB; i++) {
+                if (blife[i] <= 0f) continue;
+                bvb.put(bpos[i * 3]);
+                bvb.put(bpos[i * 3 + 1]);
+                bvb.put(bpos[i * 3 + 2]);
+                boolean flash = blife[i] < 1f && (((int) (blife[i] * 10f)) & 1) == 0; // pisca quando vai explodir
+                if (flash) {
+                    bcb.put((byte) 255); bcb.put((byte) 60); bcb.put((byte) 220); bcb.put((byte) 255);
+                } else {
+                    bcb.put((byte) 42); bcb.put((byte) 42); bcb.put((byte) 51); bcb.put((byte) 255);
+                }
+                n++;
+            }
+            if (n == 0) return;
+            bvb.flip();
+            bcb.flip();
+            gl.glPointSize(22f);
+            gl.glVertexPointer(3, GL10.GL_FLOAT, 0, bvb);
+            gl.glColorPointer(4, GL10.GL_UNSIGNED_BYTE, 0, bcb);
+            gl.glDrawArrays(GL10.GL_POINTS, 0, n);
+        }
+
         // ---------- renderer ----------
         void applyFog(GL10 gl, boolean under) {
-            float[] fc = under ? FOG_WATER : FOG_AIR;
+            float[] fc = under ? FOG_WATER : new float[]{skyR, skyG, skyB, 1f};
             gl.glClearColor(fc[0], fc[1], fc[2], 1f);
             gl.glFogfv(GL10.GL_FOG_COLOR, fc, 0);
             gl.glFogf(GL10.GL_FOG_START, under ? 1f : FOG_S);
@@ -1437,14 +1888,16 @@ public class MainActivity extends Activity {
             }
             updatePlayer(dt);
             updateChaos(dt);
+            updateBombs(dt);
+            updateTime(dt);
             updateChunks();
 
             boolean under = isWater(px, py + EYE, pz);
-            if (under != wasUnder) {
-                wasUnder = under;
-                applyFog(gl, under);
-            }
+            computeSky();
+            wasUnder = under;
+            applyFog(gl, under); // a cor do ceu muda o tempo todo
 
+            resetState(gl);
             gl.glClear(GL10.GL_COLOR_BUFFER_BIT | GL10.GL_DEPTH_BUFFER_BIT);
             gl.glMatrixMode(GL10.GL_MODELVIEW);
             gl.glLoadIdentity();
@@ -1494,6 +1947,9 @@ public class MainActivity extends Activity {
             gl.glPushMatrix();
             gl.glTranslatef(-px, -ey, -pz);
             drawParticles(gl, dt);
+            drawBombs(gl);
+            drawNightOverlay(gl);
+            drawSky(gl, under);
             gl.glPopMatrix();
         }
     }
@@ -1501,12 +1957,12 @@ public class MainActivity extends Activity {
     // =====================================================================
     static class Hud extends View {
         // itens do inventario criativo: blocos 1..30 + limpar (0)
-        static final int[] INV = new int[Game.NB];
+        static final int[] INV = new int[Game.NALL];
         static {
-            for (int i = 1; i < Game.NB; i++) INV[i - 1] = i;
-            INV[Game.NB - 1] = 0;
+            for (int i = 1; i < Game.NALL; i++) INV[i - 1] = i;
+            INV[Game.NALL - 1] = 0;
         }
-        static final int COLS = 8, ROWS = 4;
+        static final int COLS = 8, ROWS = 5;
         static final float[] SRC = {0f, 0f, 16f, 0f, 0f, 16f};
 
         final Game g;
@@ -1519,7 +1975,7 @@ public class MainActivity extends Activity {
         final float[] lx = new float[16], ly = new float[16], ax = new float[16], ay = new float[16];
         final boolean[] moved = new boolean[16], done = new boolean[16];
         final Runnable[] lp = new Runnable[16];
-        final RectF novo = new RectF(), inv = new RectF(), panel = new RectF(), rr = new RectF(), cell = new RectF();
+        final RectF novo = new RectF(), inv = new RectF(), panel = new RectF(), rr = new RectF(), cell = new RectF(), ir = new RectF();
         boolean joyOn, invOpen;
         float joyCx, joyCy, joyKx, joyKy;
 
@@ -1557,8 +2013,8 @@ public class MainActivity extends Activity {
             float W = getWidth(), H = getHeight();
             novo.set(W - H * 0.38f, H * 0.02f, W - H * 0.02f, H * 0.12f);
             inv.set(W - H * 0.60f, H * 0.02f, W - H * 0.40f, H * 0.12f);
-            float pw = Math.min(W * 0.86f, H * 1.75f), ph = H * 0.66f;
-            panel.set((W - pw) / 2f, H * 0.15f, (W + pw) / 2f, H * 0.15f + ph);
+            float pw = Math.min(W * 0.86f, H * 1.75f), ph = H * 0.72f;
+            panel.set((W - pw) / 2f, H * 0.13f, (W + pw) / 2f, H * 0.13f + ph);
         }
 
         int hotHit(float x, float y) {
@@ -1588,6 +2044,13 @@ public class MainActivity extends Activity {
                 if (cell.contains(x, y)) return i;
             }
             return -1;
+        }
+
+        String clockText() {
+            float hr = (6f + g.skyAng / 6.2831855f * 24f) % 24f;
+            if (hr < 0f) hr += 24f;
+            int hh = (int) hr, mm = (int) ((hr - hh) * 60f);
+            return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
         }
 
         float dist(float a, float b, float c, float d) {
@@ -1718,6 +2181,12 @@ public class MainActivity extends Activity {
 
         // icone do bloco em cubo isometrico, com as texturas de verdade
         void drawIcon(Canvas c, int b, float x, float y, float s) {
+            if (b >= Game.NB) { // item: sprite 2D em vez de cubo
+                Bitmap bm = Game.Tex.tile(Game.ITEM_TILE[b - Game.NB]);
+                ir.set(x + s * 0.04f, y + s * 0.04f, x + s * 0.96f, y + s * 0.96f);
+                c.drawBitmap(bm, null, ir, ipT);
+                return;
+            }
             Bitmap top = Game.Tex.tile(Game.TILE[b][0]);
             Bitmap side = Game.Tex.tile(Game.TILE[b][1]);
             float cx = x + s * 0.5f;
@@ -1761,11 +2230,12 @@ public class MainActivity extends Activity {
             // dica
             p.setTextAlign(Paint.Align.LEFT);
             p.setTextSize(H * 0.032f);
-            c.drawText("toca = bota | segura = quebra", H * 0.03f, H * 0.06f, p);
+            c.drawText("toca = bota/usa | segura = quebra", H * 0.03f, H * 0.06f, p);
             // debug: posicao e chunks carregados
             p.setTextSize(H * 0.026f);
             c.drawText("XYZ " + (int) Math.floor(g.px) + " " + (int) Math.floor(g.py) + " "
-                    + (int) Math.floor(g.pz) + "  chunks " + g.chunkCount, H * 0.03f, H * 0.1f, p);
+                    + (int) Math.floor(g.pz) + "  chunks " + g.chunkCount + "  " + clockText(), H * 0.03f, H * 0.1f, p);
+            if (g.speedT > 0f) c.drawText("VELOCIDADE " + (int) Math.ceil(g.speedT) + "s", H * 0.03f, H * 0.14f, p);
             postInvalidateDelayed(250);
             // joystick
             float R = joyR();
