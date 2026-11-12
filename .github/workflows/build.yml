@@ -15,7 +15,7 @@ jobs:
       - name: Instala build-tools e plataforma
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Compila APK
         run: |
