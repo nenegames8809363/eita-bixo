@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
       - name: Prepara SDK
         run: |
@@ -30,8 +34,8 @@ jobs:
           rm -rf $OUT && mkdir -p $OUT/obj
 
           $BT/aapt package -f -M AndroidManifest.xml -I "$JAR" -F $OUT/base.apk
-          javac -nowarn -source 8 -target 8 -cp "$JAR" -d $OUT/obj $(find src -name '*.java')
-          $BT/d8 --lib "$JAR" --output $OUT $(find $OUT/obj -name '*.class')
+          javac -nowarn --release 8 -cp "$JAR" -d $OUT/obj $(find src -name '*.java')
+          $BT/d8 --min-api 24 --lib "$JAR" --output $OUT $(find $OUT/obj -name '*.class')
           cd $OUT && $BT/aapt add base.apk classes.dex && cd ..
           $BT/zipalign -f 4 $OUT/base.apk $OUT/aligned.apk
           keytool -genkeypair -keystore debug.jks -storepass android \
