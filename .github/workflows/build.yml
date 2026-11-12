@@ -10,7 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Instala Android SDK
+      - uses: android-actions/setup-android@v3
+
+      - name: Instala build-tools e plataforma
         run: |
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
