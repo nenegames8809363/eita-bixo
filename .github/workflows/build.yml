@@ -1,0 +1,40 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instala Android SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Compila APK
+        run: |
+          set -e
+          BT=$ANDROID_HOME/build-tools/34.0.0
+          JAR=$ANDROID_HOME/platforms/android-34/android.jar
+          OUT=build
+          rm -rf $OUT && mkdir -p $OUT/obj
+
+          $BT/aapt package -f -M AndroidManifest.xml -I "$JAR" -F $OUT/base.apk
+          javac -source 8 -target 8 -cp "$JAR" -d $OUT/obj $(find src -name '*.java')
+          $BT/d8 --lib "$JAR" --output $OUT $(find $OUT/obj -name '*.class')
+          cd $OUT && $BT/aapt add base.apk classes.dex && cd ..
+          $BT/zipalign -f 4 $OUT/base.apk $OUT/aligned.apk
+          keytool -genkeypair -keystore debug.jks -storepass android \
+            -keypass android -alias debug -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=debug"
+          $BT/apksigner sign --ks debug.jks --ks-pass pass:android \
+            --out $OUT/minecraft2.apk $OUT/aligned.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minecraft2-apk
+          path: build/minecraft2.apk
