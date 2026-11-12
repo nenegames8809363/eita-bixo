@@ -2,10 +2,14 @@ package com.caos.minecraft2;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.LightingColorFilter;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.opengl.GLSurfaceView;
+import android.opengl.GLUtils;
 import android.os.Bundle;
 import android.os.Handler;
 import android.view.HapticFeedbackConstants;
@@ -27,6 +31,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
+import javax.microedition.khronos.opengles.GL11;
 
 public class MainActivity extends Activity {
     GLSurfaceView glv;
@@ -84,25 +89,62 @@ public class MainActivity extends Activity {
 
         // ids dos blocos
         static final int AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5,
-                LEAF = 6, CAOS = 7, WATER = 8, SNOW = 9, CACTUS = 10, ORE = 11;
+                LEAF = 6, CAOS = 7, WATER = 8, SNOW = 9, CACTUS = 10, IRON = 11,
+                PLANKS = 12, COBBLE = 13, BRICK = 14, GLASS = 15, GRAVEL = 16, SANDSTONE = 17,
+                WOOL_W = 18, WOOL_R = 19, WOOL_B = 20, WOOL_G = 21, WOOL_Y = 22, WOOL_K = 23,
+                OBSIDIAN = 24, ICE = 25, COAL = 26, GOLD = 27, DIAMOND = 28, LAMP = 29, BEDROCK = 30;
+        static final int NB = 31;               // quantidade de ids (0..30)
 
-        // {topo, lado}
-        static final int[][] COR = {
-            {0, 0},
-            {0x3FAE46, 0x7A5230}, // 1 grama
-            {0x7A5230, 0x6A4526}, // 2 terra
-            {0x8C8C8C, 0x777777}, // 3 pedra
-            {0xE6D58A, 0xD4C377}, // 4 areia
-            {0xB48850, 0x9A6B35}, // 5 madeira
-            {0x2E8B3A, 0x277A32}, // 6 folha
-            {0xE63CDC, 0xA02AA0}, // 7 caos
-            {0x2F6FE0, 0x2F6FE0}, // 8 agua
-            {0xF2F6FA, 0xDDE5EE}, // 9 neve
-            {0x2F8F3F, 0x2A7A36}, // 10 cacto
-            {0xC9A46A, 0x9A8466}  // 11 minerio
+        // tiles {topo, lado, baixo} de cada bloco (indices no atlas)
+        static final int[][] TILE = {
+            {0, 0, 0},                                                         // 0 ar
+            {Tex.T_GRASS_TOP, Tex.T_GRASS_SIDE, Tex.T_DIRT},                   // 1 grama
+            {Tex.T_DIRT, Tex.T_DIRT, Tex.T_DIRT},                              // 2 terra
+            {Tex.T_STONE, Tex.T_STONE, Tex.T_STONE},                           // 3 pedra
+            {Tex.T_SAND, Tex.T_SAND, Tex.T_SAND},                              // 4 areia
+            {Tex.T_LOG_TOP, Tex.T_LOG_SIDE, Tex.T_LOG_TOP},                    // 5 madeira
+            {Tex.T_LEAF, Tex.T_LEAF, Tex.T_LEAF},                              // 6 folha
+            {Tex.T_CAOS, Tex.T_CAOS, Tex.T_CAOS},                              // 7 caos
+            {Tex.T_WATER, Tex.T_WATER, Tex.T_WATER},                           // 8 agua
+            {Tex.T_SNOW, Tex.T_SNOW, Tex.T_SNOW},                              // 9 neve
+            {Tex.T_CACTUS_TOP, Tex.T_CACTUS_SIDE, Tex.T_CACTUS_TOP},           // 10 cacto
+            {Tex.T_IRON, Tex.T_IRON, Tex.T_IRON},                              // 11 ferro
+            {Tex.T_PLANKS, Tex.T_PLANKS, Tex.T_PLANKS},                        // 12 tabuas
+            {Tex.T_COBBLE, Tex.T_COBBLE, Tex.T_COBBLE},                        // 13 pedregulho
+            {Tex.T_BRICK, Tex.T_BRICK, Tex.T_BRICK},                           // 14 tijolo
+            {Tex.T_GLASS, Tex.T_GLASS, Tex.T_GLASS},                           // 15 vidro
+            {Tex.T_GRAVEL, Tex.T_GRAVEL, Tex.T_GRAVEL},                        // 16 cascalho
+            {Tex.T_SS_TOP, Tex.T_SS_SIDE, Tex.T_SS_TOP},                       // 17 arenito
+            {Tex.T_WOOL_W, Tex.T_WOOL_W, Tex.T_WOOL_W},                        // 18 la branca
+            {Tex.T_WOOL_R, Tex.T_WOOL_R, Tex.T_WOOL_R},                        // 19 la vermelha
+            {Tex.T_WOOL_B, Tex.T_WOOL_B, Tex.T_WOOL_B},                        // 20 la azul
+            {Tex.T_WOOL_G, Tex.T_WOOL_G, Tex.T_WOOL_G},                        // 21 la verde
+            {Tex.T_WOOL_Y, Tex.T_WOOL_Y, Tex.T_WOOL_Y},                        // 22 la amarela
+            {Tex.T_WOOL_K, Tex.T_WOOL_K, Tex.T_WOOL_K},                        // 23 la preta
+            {Tex.T_OBSIDIAN, Tex.T_OBSIDIAN, Tex.T_OBSIDIAN},                  // 24 obsidiana
+            {Tex.T_ICE, Tex.T_ICE, Tex.T_ICE},                                 // 25 gelo
+            {Tex.T_COAL, Tex.T_COAL, Tex.T_COAL},                              // 26 carvao
+            {Tex.T_GOLD, Tex.T_GOLD, Tex.T_GOLD},                              // 27 ouro
+            {Tex.T_DIAMOND, Tex.T_DIAMOND, Tex.T_DIAMOND},                     // 28 diamante
+            {Tex.T_LAMP, Tex.T_LAMP, Tex.T_LAMP},                              // 29 lampada
+            {Tex.T_BEDROCK, Tex.T_BEDROCK, Tex.T_BEDROCK}                      // 30 bedrock
         };
         static final String[] NOMES = {"VAZIO", "GRAMA", "TERRA", "PEDRA", "AREIA", "MADEIRA",
-                "FOLHA", "CAOS", "AGUA", "NEVE", "CACTO", "MINERIO"};
+                "FOLHA", "CAOS", "AGUA", "NEVE", "CACTO", "FERRO", "TABUAS", "PEDREGULHO",
+                "TIJOLO", "VIDRO", "CASCALHO", "ARENITO", "LA BRANCA", "LA VERMELHA", "LA AZUL",
+                "LA VERDE", "LA AMARELA", "LA PRETA", "OBSIDIANA", "GELO", "CARVAO", "OURO",
+                "DIAMANTE", "LAMPADA", "BEDROCK"};
+
+        // blocos que escondem a face do vizinho (os outros deixam ver atraves)
+        static final boolean[] OPAQUE = new boolean[NB];
+        static {
+            Arrays.fill(OPAQUE, true);
+            OPAQUE[AIR] = false;
+            OPAQUE[LEAF] = false;
+            OPAQUE[WATER] = false;
+            OPAQUE[GLASS] = false;
+        }
+
         static final float[][] CORN = {
             {1,0,0, 1,1,0, 1,1,1, 1,0,1},
             {0,0,1, 0,1,1, 0,1,0, 0,0,0},
@@ -111,6 +153,16 @@ public class MainActivity extends Activity {
             {0,0,1, 1,0,1, 1,1,1, 0,1,1},
             {1,0,0, 0,0,0, 0,1,0, 1,1,0}
         };
+        // coordenada (u,v) da textura em cada canto de cada face
+        static final float[][] CUV = {
+            {1,1, 1,0, 0,0, 0,1},
+            {1,1, 1,0, 0,0, 0,1},
+            {0,0, 0,1, 1,1, 1,0},
+            {0,0, 1,0, 1,1, 0,1},
+            {0,1, 1,1, 1,0, 0,0},
+            {0,1, 1,1, 1,0, 0,0}
+        };
+        static final float TEPS = 0.004f;      // folguinha pra nao pegar pixel do tile do lado
         static final int[] DX = {1, -1, 0, 0, 0, 0};
         static final int[] DY = {0, 0, 1, -1, 0, 0};
         static final int[] DZ = {0, 0, 0, 0, 1, -1};
@@ -118,6 +170,9 @@ public class MainActivity extends Activity {
         static final int[] ORDER = {0, 1, 2, 0, 2, 3};
         static final float[] FOG_AIR = {0.53f, 0.81f, 0.92f, 1f};
         static final float[] FOG_WATER = {0.08f, 0.22f, 0.45f, 1f};
+
+        // cor media do bloco (pras particulas)
+        static int pcolor(int t) { return Tex.avg(TILE[t][1]); }
 
         // offsets de chunks ordenados do mais perto pro mais longe
         static final int[][] OFFS;
@@ -136,16 +191,274 @@ public class MainActivity extends Activity {
             OFFS = o;
         }
 
+        // =================================================================
+        // texturas procedurais: um atlas 256x256 com tiles de 16x16
+        // =================================================================
+        static final class Tex {
+            static final int T_GRASS_TOP = 0, T_GRASS_SIDE = 1, T_DIRT = 2, T_STONE = 3, T_SAND = 4,
+                    T_LOG_SIDE = 5, T_LOG_TOP = 6, T_LEAF = 7, T_CAOS = 8, T_WATER = 9, T_SNOW = 10,
+                    T_CACTUS_SIDE = 11, T_CACTUS_TOP = 12, T_IRON = 13, T_PLANKS = 14, T_COBBLE = 15,
+                    T_BRICK = 16, T_GLASS = 17, T_GRAVEL = 18, T_SS_SIDE = 19, T_SS_TOP = 20,
+                    T_WOOL_W = 21, T_WOOL_R = 22, T_WOOL_B = 23, T_WOOL_G = 24, T_WOOL_Y = 25,
+                    T_WOOL_K = 26, T_OBSIDIAN = 27, T_ICE = 28, T_COAL = 29, T_GOLD = 30,
+                    T_DIAMOND = 31, T_LAMP = 32, T_BEDROCK = 33;
+            static final int NT = 34, TS = 16, AT = 256;
+            static final int[] pix = new int[AT * AT];
+            static final int[] AVG = new int[NT];
+            static final Bitmap[] tiles = new Bitmap[NT];
+            static final int[] CAOS_PAL = {0xE63CDC, 0x5A1470, 0x1EE6E6, 0xFF9CFF, 0x14061C};
+            static Bitmap atlas;
+
+            static synchronized Bitmap atlas() {
+                if (atlas == null) {
+                    build();
+                    atlas = Bitmap.createBitmap(pix, AT, AT, Bitmap.Config.ARGB_8888);
+                    for (int t = 0; t < NT; t++) {
+                        long r = 0, g = 0, b = 0;
+                        int n = 0;
+                        for (int y = 0; y < TS; y++) {
+                            for (int x = 0; x < TS; x++) {
+                                int p = pix[((t >> 4) * TS + y) * AT + (t & 15) * TS + x];
+                                if ((p >>> 24) == 0) continue;
+                                r += (p >> 16) & 255;
+                                g += (p >> 8) & 255;
+                                b += p & 255;
+                                n++;
+                            }
+                        }
+                        AVG[t] = (n == 0) ? 0xFF808080 : rgb((int) (r / n), (int) (g / n), (int) (b / n));
+                    }
+                }
+                return atlas;
+            }
+
+            static synchronized Bitmap tile(int t) {
+                if (tiles[t] == null) {
+                    tiles[t] = Bitmap.createBitmap(atlas(), (t & 15) * TS, (t >> 4) * TS, TS, TS);
+                }
+                return tiles[t];
+            }
+
+            static synchronized int avg(int t) {
+                atlas();
+                return AVG[t];
+            }
+
+            // ruido deterministico 0..1 por pixel
+            static float n2(int x, int y, int s) {
+                int h = x * 374761393 + y * 668265263 + s * 1274126177;
+                h = (h ^ (h >>> 13)) * 1274126177;
+                h ^= h >>> 16;
+                return (h & 0xFFFF) / 65536f;
+            }
+
+            static int clampi(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+            static int rgb(int r, int g, int b) {
+                return 0xFF000000 | (clampi(r) << 16) | (clampi(g) << 8) | clampi(b);
+            }
+
+            static int shade(int c, float f) {
+                return rgb((int) (((c >> 16) & 255) * f), (int) (((c >> 8) & 255) * f), (int) ((c & 255) * f));
+            }
+
+            static void put(int t, int x, int y, int argb) {
+                pix[((t >> 4) * TS + y) * AT + (t & 15) * TS + x] = argb;
+            }
+
+            static int dirt(int x, int y) {
+                float f = 0.82f + n2(x, y, 6) * 0.28f;
+                float p = n2(x, y, 7);
+                if (p > 0.94f) f *= 0.65f;
+                else if (p < 0.04f) f *= 1.25f;
+                return shade(0x866043, f);
+            }
+
+            static int stone(int x, int y, int s, int base) {
+                float f = 0.88f + n2(x, y, s) * 0.22f + (n2(x >> 2, y >> 2, s + 1) - 0.5f) * 0.14f;
+                return shade(base, f);
+            }
+
+            static void ore(int t, int oc, int seed) {
+                for (int y = 0; y < TS; y++)
+                    for (int x = 0; x < TS; x++)
+                        put(t, x, y, stone(x, y, 5, 0x7D7D7D));
+                for (int k = 0; k < 6; k++) {
+                    int cx = 2 + (int) (n2(k, 1, seed) * 12f);
+                    int cy = 2 + (int) (n2(k, 2, seed) * 12f);
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            if (Math.abs(dx) + Math.abs(dy) > 1 && n2(cx + dx, cy + dy, seed + 9) < 0.5f) continue;
+                            int x = cx + dx, y = cy + dy;
+                            if (x < 0 || x > 15 || y < 0 || y > 15) continue;
+                            put(t, x, y, shade(oc, 0.85f + n2(x, y, seed + 5) * 0.3f));
+                        }
+                    }
+                }
+            }
+
+            static void bricks(int t, int bw, int bh, int mortar, int seed, boolean gray, int baseCol) {
+                for (int y = 0; y < TS; y++) {
+                    for (int x = 0; x < TS; x++) {
+                        int row = y / bh, yy = y % bh;
+                        int off = ((row & 1) == 0) ? 0 : bw / 2;
+                        int xx = (x + off) % bw;
+                        int idx = (x + off) / bw + row * 7;
+                        boolean m = (yy == bh - 1) || (xx == bw - 1);
+                        int col;
+                        if (m) {
+                            col = shade(mortar, 0.9f + n2(x, y, seed) * 0.2f);
+                        } else if (gray) {
+                            float g = 0.6f + n2(idx, 0, seed + 1) * 0.55f;
+                            col = shade(0xA0A0A0, g * (0.9f + n2(x, y, seed + 2) * 0.2f));
+                        } else {
+                            col = shade(baseCol, 0.82f + n2(idx, 0, seed + 1) * 0.3f + n2(x, y, seed + 2) * 0.1f);
+                        }
+                        put(t, x, y, col);
+                    }
+                }
+            }
+
+            static void wool(int t, int color, int seed) {
+                for (int y = 0; y < TS; y++) {
+                    for (int x = 0; x < TS; x++) {
+                        float f = 0.9f + n2(x, y, seed) * 0.16f;
+                        if (((x + y) & 1) == 0) f *= 0.96f;
+                        put(t, x, y, shade(color, f));
+                    }
+                }
+            }
+
+            static void build() {
+                for (int y = 0; y < TS; y++) {
+                    for (int x = 0; x < TS; x++) {
+                        // grama (topo)
+                        float gf = 0.82f + n2(x, y, 1) * 0.28f + (n2(x >> 1, y >> 1, 2) - 0.5f) * 0.12f;
+                        put(T_GRASS_TOP, x, y, shade(0x5BAA3E, gf));
+                        // terra
+                        put(T_DIRT, x, y, dirt(x, y));
+                        // grama (lado): terra com franja verde irregular em cima
+                        int d = 3 + (int) (n2(x, 0, 3) * 3f);
+                        put(T_GRASS_SIDE, x, y, y < d ? shade(0x5BAA3E, 0.78f + n2(x, y, 4) * 0.28f) : dirt(x, y));
+                        // pedra
+                        put(T_STONE, x, y, stone(x, y, 5, 0x7D7D7D));
+                        // areia
+                        float sf = 0.92f + n2(x, y, 10) * 0.12f;
+                        if (n2(x, y, 11) > 0.95f) sf *= 0.85f;
+                        put(T_SAND, x, y, shade(0xDCCF8E, sf));
+                        // tronco (lado): casca com listras verticais
+                        float lf = 0.7f + n2(x, 0, 12) * 0.35f + n2(x, y, 13) * 0.12f;
+                        put(T_LOG_SIDE, x, y, shade(0x6B5230, lf));
+                        // tronco (topo): aneis
+                        float dx = x - 7.5f, dy = y - 7.5f;
+                        float dd = Math.max(Math.abs(dx), Math.abs(dy));
+                        int lt;
+                        if (dd > 5.5f) {
+                            lt = shade(0x5A4328, 0.85f + n2(x, y, 14) * 0.25f);
+                        } else {
+                            int ring = (int) Math.sqrt(dx * dx + dy * dy);
+                            lt = shade((ring & 1) == 0 ? 0xB8935A : 0x9C7A46, 0.9f + n2(x, y, 15) * 0.18f);
+                        }
+                        put(T_LOG_TOP, x, y, lt);
+                        // folha: com uns buracos (transparentes)
+                        float ln = n2(x, y, 20);
+                        if (ln > 0.9f) put(T_LEAF, x, y, 0x002F8A33);
+                        else put(T_LEAF, x, y, shade(0x2F8A33, 0.62f + n2(x, y, 21) * 0.6f));
+                        // caos: pixels bagunçados em blocos 2x2
+                        int ci = (int) (n2(x >> 1, y >> 1, 30) * 5f);
+                        if (ci > 4) ci = 4;
+                        put(T_CAOS, x, y, shade(CAOS_PAL[ci], 0.9f + n2(x, y, 31) * 0.2f));
+                        // agua
+                        float wf = 0.85f + n2(x >> 1, y >> 1, 32) * 0.2f + (float) Math.sin((x + y) * 0.9) * 0.05f;
+                        put(T_WATER, x, y, shade(0x2F6FE0, wf));
+                        // neve
+                        put(T_SNOW, x, y, shade(0xF2F6FA, 0.94f + n2(x, y, 33) * 0.08f));
+                        // cacto (lado)
+                        float cf = 0.85f + n2(x, y, 34) * 0.2f;
+                        if (x == 0 || x == 15) cf *= 0.7f;
+                        else if (x % 5 == 2) cf *= 0.85f;
+                        int cc = shade(0x2E8B3F, cf);
+                        if (n2(x, y, 35) > 0.94f) cc = 0xFFD8F0C8;
+                        put(T_CACTUS_SIDE, x, y, cc);
+                        // cacto (topo)
+                        float tf = 0.9f + n2(x, y, 36) * 0.15f;
+                        if (dd > 6.5f) tf *= 0.7f;
+                        else if (Math.abs(dx) < 1.1f || Math.abs(dy) < 1.1f) tf *= 0.88f;
+                        put(T_CACTUS_TOP, x, y, shade(0x3A9A4A, tf));
+                        // tabuas: 4 tabuas horizontais com emenda
+                        int board = y >> 2, yy = y & 3;
+                        float pf = 0.9f + n2(x >> 1, yy + board * 4, 60) * 0.18f + n2(x, y, 61) * 0.06f;
+                        if (yy == 3) pf *= 0.75f;
+                        int seam = ((board & 1) == 0) ? 5 : 12;
+                        if (x == seam && yy < 3) pf *= 0.8f;
+                        put(T_PLANKS, x, y, shade(0xB58F56, pf));
+                        // vidro: moldura + brilhinho, resto transparente
+                        boolean edge = (x == 0 || y == 0 || x == 15 || y == 15);
+                        boolean glint = (x == y && x >= 3 && x <= 6) || (x == y - 1 && x >= 3 && x <= 5);
+                        int gl;
+                        if (edge) gl = shade(0xC8E8F0, 0.9f + n2(x, y, 62) * 0.15f);
+                        else if (glint) gl = 0xFFFFFFFF;
+                        else gl = 0x00C8E8F0;
+                        put(T_GLASS, x, y, gl);
+                        // cascalho
+                        float gn = n2(x >> 1, y >> 1, 70);
+                        int gbase = n2(x, y, 71) > 0.82f ? 0x8C7A66 : 0x9A9A9A;
+                        put(T_GRAVEL, x, y, shade(gbase, (0.55f + gn * 0.6f) * (0.9f + n2(x, y, 72) * 0.2f)));
+                        // arenito
+                        float af = 0.93f + n2(x, y, 73) * 0.1f;
+                        if (y == 2 || y == 3 || y == 12) af *= 0.86f;
+                        put(T_SS_SIDE, x, y, shade(0xD9CC8C, af));
+                        put(T_SS_TOP, x, y, shade(0xDDD196, 0.96f + n2(x, y, 74) * 0.08f));
+                        // obsidiana
+                        float on = n2(x, y, 80);
+                        if (on > 0.92f) put(T_OBSIDIAN, x, y, shade(0x5B34A0, 0.8f + n2(x, y, 81) * 0.4f));
+                        else put(T_OBSIDIAN, x, y, shade(0x18102C, 0.7f + on * 0.7f));
+                        // gelo
+                        float ifc = 0.94f + n2(x, y, 82) * 0.1f;
+                        if (((x + y) % 8) == 0 || ((x + y + 1) % 8) == 0) ifc *= 1.08f;
+                        put(T_ICE, x, y, shade(0xA4D4F0, ifc));
+                        // lampada
+                        boolean border = ((x & 7) == 0) || ((y & 7) == 0);
+                        float lamf = 0.95f + n2(x, y, 83) * 0.1f;
+                        int lc = border ? shade(0xC8963C, lamf) : shade(0xFAE79A, lamf);
+                        if (!border && (x & 7) >= 3 && (x & 7) <= 4 && (y & 7) >= 3 && (y & 7) <= 4) lc = shade(0xFFF6C8, 1f);
+                        put(T_LAMP, x, y, lc);
+                        // bedrock
+                        float bn = n2(x, y, 84);
+                        float bf = 0.5f + bn * 0.9f;
+                        if (n2(x >> 1, y >> 1, 85) > 0.6f) bf *= 0.7f;
+                        put(T_BEDROCK, x, y, shade(0x555555, bf));
+                    }
+                }
+                ore(T_IRON, 0xD8AF93, 40);
+                ore(T_COAL, 0x1E1E1E, 41);
+                ore(T_GOLD, 0xFADC3C, 42);
+                ore(T_DIAMOND, 0x5AE6E1, 43);
+                bricks(T_BRICK, 8, 4, 0xB4AFA5, 50, false, 0x964637);
+                bricks(T_COBBLE, 6, 5, 0x555555, 53, true, 0);
+                wool(T_WOOL_W, 0xEBEBEB, 90);
+                wool(T_WOOL_R, 0xAF2D2D, 91);
+                wool(T_WOOL_B, 0x3246AA, 92);
+                wool(T_WOOL_G, 0x3C8232, 93);
+                wool(T_WOOL_Y, 0xE6C832, 94);
+                wool(T_WOOL_K, 0x1E1E23, 95);
+            }
+        }
+
         // ---------- classes auxiliares ----------
         static final class Mesh {
-            final FloatBuffer v;
-            final ByteBuffer c;
+            final FloatBuffer v;   // posicoes
+            final FloatBuffer t;   // coordenadas da textura
+            final ByteBuffer c;    // cores (sombreamento)
             final int n;
-            Mesh(float[] va, int nf, byte[] ca, int nc, int n) {
+            Mesh(float[] va, int nf, float[] ta, int nt, byte[] ca, int nc, int n) {
                 this.n = n;
                 v = ByteBuffer.allocateDirect(nf * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
                 v.put(va, 0, nf);
                 v.position(0);
+                t = ByteBuffer.allocateDirect(nt * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+                t.put(ta, 0, nt);
+                t.position(0);
                 c = ByteBuffer.allocateDirect(nc).order(ByteOrder.nativeOrder());
                 c.put(ca, 0, nc);
                 c.position(0);
@@ -155,17 +468,20 @@ public class MainActivity extends Activity {
         // acumula vertices (cresce sozinho)
         static final class Sink {
             float[] v = new float[24576];
+            float[] t = new float[16384];
             byte[] c = new byte[32768];
-            int nf, nc, n;
-            void reset() { nf = 0; nc = 0; n = 0; }
-            void vert(float x, float y, float z, byte r, byte g, byte b, byte a) {
+            int nf, nt, nc, n;
+            void reset() { nf = 0; nt = 0; nc = 0; n = 0; }
+            void vert(float x, float y, float z, float tu, float tv, byte r, byte g, byte b, byte a) {
                 if (nf + 3 > v.length) v = Arrays.copyOf(v, v.length * 2);
+                if (nt + 2 > t.length) t = Arrays.copyOf(t, t.length * 2);
                 if (nc + 4 > c.length) c = Arrays.copyOf(c, c.length * 2);
                 v[nf++] = x; v[nf++] = y; v[nf++] = z;
+                t[nt++] = tu; t[nt++] = tv;
                 c[nc++] = r; c[nc++] = g; c[nc++] = b; c[nc++] = a;
                 n++;
             }
-            Mesh build() { return n == 0 ? null : new Mesh(v, nf, c, nc, n); }
+            Mesh build() { return n == 0 ? null : new Mesh(v, nf, t, nt, c, nc, n); }
         }
 
         static final class Chunk {
@@ -262,21 +578,27 @@ public class MainActivity extends Activity {
                 float mtn = noise.fbm(x * 0.011f - 300f, z * 0.011f + 300f, 4); // montanhas
                 float temp = noise.fbm(x * 0.0035f + 700f, z * 0.0035f - 700f, 2);
                 float moist = noise.fbm(x * 0.004f - 900f, z * 0.004f + 900f, 2);
+                float gv = noise.v2(x * 0.07f + 50f, z * 0.07f - 50f);        // manchas de cascalho
                 float m = (mtn - 0.5f) * 6f;
                 if (m < 0f) m = 0f;
                 if (m > 1f) m = 1f;
                 float h = SEA + 3 + (cont - 0.5f) * 36f + (hill - 0.5f) * 14f + m * m * 36f;
                 int hi = clamp((int) h, 2, SY - 14);
-                int biome = 0;                                    // 0 planicie, 1 floresta, 2 deserto
+                int biome = 0;                          // 0 planicie, 1 floresta, 2 deserto, 3 tundra
                 if (temp > 0.56f && moist < 0.5f) biome = 2;
+                else if (temp < 0.42f) biome = 3;
                 else if (moist > 0.52f) biome = 1;
                 o.h = hi;
                 o.m = m;
                 o.biome = biome;
-                if (hi <= SEA + 1) { o.top = SAND; o.sub = SAND; }
+                if (hi <= SEA + 1) {
+                    if (hi < SEA - 1 && gv > 0.6f) { o.top = GRAVEL; o.sub = GRAVEL; }
+                    else { o.top = SAND; o.sub = SAND; }
+                }
                 else if (biome == 2 && m < 0.3f) { o.top = SAND; o.sub = SAND; }
                 else if (hi >= SNOW_Y) { o.top = SNOW; o.sub = STONE; }
-                else if (m > 0.35f && hi > SEA + 12) { o.top = STONE; o.sub = STONE; }
+                else if (m > 0.35f && hi > SEA + 12) { o.top = (gv > 0.62f) ? GRAVEL : STONE; o.sub = STONE; }
+                else if (biome == 3) { o.top = SNOW; o.sub = DIRT; }
                 else { o.top = GRASS; o.sub = DIRT; }
             }
 
@@ -346,17 +668,28 @@ public class MainActivity extends Activity {
                         int h = col.h;
                         for (int y = 0; y <= h; y++) {
                             int t;
-                            if (y == 0) t = STONE;
-                            else if (y == h) t = col.top;
-                            else if (y >= h - 3) t = col.sub;
-                            else {
+                            if (y == 0) {
+                                t = BEDROCK;
+                            } else if (y == h) {
+                                t = col.top;
+                            } else if (y >= h - 3) {
+                                t = col.sub;
+                                if (t == SAND && col.biome == 2 && y <= h - 2) t = SANDSTONE;
+                            } else {
                                 t = STONE;
-                                if (y < 40 && noise.rand(x, y + 5000, z) < 0.012f) t = ORE;
+                                float o = noise.rand(x, y + 5000, z);
+                                if (o < 0.012f) { if (y < 56) t = COAL; }
+                                else if (o < 0.022f) { if (y < 40) t = IRON; }
+                                else if (o < 0.026f) { if (y < 24) t = GOLD; }
+                                else if (o < 0.028f) { if (y < 14) t = DIAMOND; }
                             }
                             if (y >= 2 && y <= h - 2 && carve(x, y, z)) continue;
                             b[(y * CS + lz) * CS + lx] = (byte) t;
                         }
-                        for (int y = h + 1; y <= SEA; y++) b[(y * CS + lz) * CS + lx] = (byte) WATER;
+                        for (int y = h + 1; y <= SEA; y++) {
+                            // na tundra a superficie da agua congela
+                            b[(y * CS + lz) * CS + lx] = (byte) ((col.biome == 3 && y == SEA) ? ICE : WATER);
+                        }
                     }
                 }
                 decorate(c, ox, oz);
@@ -385,20 +718,28 @@ public class MainActivity extends Activity {
 
             // x e z locais (0..15): o chunk e' posicionado na hora de desenhar
             void face(Sink s, int x, int y, int z, int wx, int wz, int d, int t) {
-                int c = (d == 2) ? COR[t][0] : COR[t][1];
+                int tile = TILE[t][d == 2 ? 0 : (d == 3 ? 2 : 1)];
                 boolean w = (t == WATER);
-                float hs = w ? 1f : 0.92f + 0.08f * (((wx * 73856093) ^ (y * 19349663) ^ (wz * 83492791)) & 7) / 7f;
-                float f = SH[d] * hs;
-                byte r = (byte) (((c >> 16) & 255) * f);
-                byte gg = (byte) (((c >> 8) & 255) * f);
-                byte bb = (byte) ((c & 255) * f);
+                float f;
+                if (t == LAMP) {
+                    f = 1f; // lampada brilha: sem sombra
+                } else {
+                    float hs = w ? 1f : 0.94f + 0.06f * (((wx * 73856093) ^ (y * 19349663) ^ (wz * 83492791)) & 7) / 7f;
+                    f = SH[d] * hs;
+                }
+                byte sh = (byte) (255 * f);
                 byte a = (byte) (w ? 160 : 255);
+                float u0 = (tile & 15) * 0.0625f, v0 = (tile >> 4) * 0.0625f;
                 float[] k = CORN[d];
+                float[] uv = CUV[d];
                 for (int i = 0; i < 6; i++) {
-                    int o = ORDER[i] * 3;
+                    int ci = ORDER[i];
+                    int o = ci * 3;
                     float vy2 = k[o + 1];
                     if (w && vy2 > 0.5f) vy2 -= 0.1f; // superficie da agua um pouco mais baixa
-                    s.vert(x + k[o], y + vy2, z + k[o + 2], r, gg, bb, a);
+                    float uu = u0 + (TEPS + uv[ci * 2] * (1f - 2f * TEPS)) * 0.0625f;
+                    float vv = v0 + (TEPS + uv[ci * 2 + 1] * (1f - 2f * TEPS)) * 0.0625f;
+                    s.vert(x + k[o], y + vy2, z + k[o + 2], uu, vv, sh, sh, sh, a);
                 }
             }
 
@@ -417,7 +758,9 @@ public class MainActivity extends Activity {
                             boolean wt = (t == WATER);
                             for (int d = 0; d < 6; d++) {
                                 int q = nb(c, x + DX[d], y + DY[d], z + DZ[d]);
-                                boolean show = wt ? (q == AIR) : (q == AIR || q == WATER);
+                                boolean show;
+                                if (wt) show = (q == AIR) || (q != WATER && !OPAQUE[q]);
+                                else show = !OPAQUE[q] && q != t;
                                 if (show) face(wt ? sw : so, x, y, z, ox + x, oz + z, d, t);
                             }
                         }
@@ -490,6 +833,7 @@ public class MainActivity extends Activity {
         boolean loadDone, wasUnder;
         volatile int chunkCount;
         boolean inited = false;
+        int texId;
 
         // culling
         float aspect = 1.78f;
@@ -896,11 +1240,11 @@ public class MainActivity extends Activity {
         void doBreak() {
             if (!raycast()) return;
             int x = hit[0], y = hit[1], z = hit[2];
-            if (y <= 0) return;
+            if (y <= 0) return; // bedrock la embaixo nao quebra
             int t = get(x, y, z);
             if (t <= 0) return;
             set(x, y, z, AIR);
-            for (int i = 0; i < 12; i++) spawn(x + 0.5f, y + 0.5f, z + 0.5f, COR[t][0]);
+            for (int i = 0; i < 12; i++) spawn(x + 0.5f, y + 0.5f, z + 0.5f, pcolor(t));
         }
 
         void doPlace() {
@@ -941,8 +1285,8 @@ public class MainActivity extends Activity {
                         int t = get(x, y, z);
                         if (t <= 0 || t == WATER) continue;
                         set(x, y, z, AIR);
-                        spawn(x + 0.5f, y + 0.5f, z + 0.5f, COR[t][0]);
-                        spawn(x + 0.5f, y + 0.5f, z + 0.5f, COR[CAOS][0]);
+                        spawn(x + 0.5f, y + 0.5f, z + 0.5f, pcolor(t));
+                        spawn(x + 0.5f, y + 0.5f, z + 0.5f, pcolor(CAOS));
                     }
                 }
             }
@@ -1026,12 +1370,29 @@ public class MainActivity extends Activity {
             gl.glFogf(GL10.GL_FOG_END, under ? 22f : FOG_E);
         }
 
+        // sobe o atlas de texturas pra GPU (pixelado de perto, suave de longe)
+        void uploadTexture(GL10 gl) {
+            int[] ids = new int[1];
+            gl.glGenTextures(1, ids, 0);
+            texId = ids[0];
+            gl.glBindTexture(GL10.GL_TEXTURE_2D, texId);
+            gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_MIN_FILTER, GL10.GL_NEAREST_MIPMAP_LINEAR);
+            gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_MAG_FILTER, GL10.GL_NEAREST);
+            gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_WRAP_S, GL10.GL_CLAMP_TO_EDGE);
+            gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL10.GL_TEXTURE_WRAP_T, GL10.GL_CLAMP_TO_EDGE);
+            gl.glTexParameterf(GL10.GL_TEXTURE_2D, GL11.GL_GENERATE_MIPMAP, (float) GL10.GL_TRUE);
+            GLUtils.texImage2D(GL10.GL_TEXTURE_2D, 0, Tex.atlas(), 0);
+            gl.glTexEnvf(GL10.GL_TEXTURE_ENV, GL10.GL_TEXTURE_ENV_MODE, GL10.GL_MODULATE);
+        }
+
         @Override
         public void onSurfaceCreated(GL10 gl, EGLConfig c) {
             gl.glEnable(GL10.GL_DEPTH_TEST);
             gl.glEnable(GL10.GL_CULL_FACE);   // nao desenha o lado de tras das faces
             gl.glCullFace(GL10.GL_BACK);
             gl.glFrontFace(GL10.GL_CCW);
+            gl.glEnable(GL10.GL_ALPHA_TEST);  // buracos da folha e do vidro
+            gl.glAlphaFunc(GL10.GL_GREATER, 0.5f);
             gl.glEnable(GL10.GL_FOG);
             gl.glFogf(GL10.GL_FOG_MODE, GL10.GL_LINEAR);
             wasUnder = false;
@@ -1039,6 +1400,7 @@ public class MainActivity extends Activity {
             gl.glEnableClientState(GL10.GL_VERTEX_ARRAY);
             gl.glEnableClientState(GL10.GL_COLOR_ARRAY);
             gl.glHint(GL10.GL_PERSPECTIVE_CORRECTION_HINT, GL10.GL_FASTEST);
+            uploadTexture(gl);
             startWorkers();
             if (!inited) {
                 newWorld();
@@ -1102,6 +1464,9 @@ public class MainActivity extends Activity {
                 if (nvis < vis.length) vis[nvis++] = c;
             }
 
+            gl.glEnable(GL10.GL_TEXTURE_2D);
+            gl.glEnableClientState(GL10.GL_TEXTURE_COORD_ARRAY);
+            gl.glBindTexture(GL10.GL_TEXTURE_2D, texId);
             for (int pass = 0; pass < 2; pass++) {
                 if (pass == 1) { // agua: translucida, depois de tudo opaco
                     gl.glEnable(GL10.GL_BLEND);
@@ -1115,6 +1480,7 @@ public class MainActivity extends Activity {
                     gl.glPushMatrix();
                     gl.glTranslatef(c.cx * CS - px, -ey, c.cz * CS - pz);
                     gl.glVertexPointer(3, GL10.GL_FLOAT, 0, m.v);
+                    gl.glTexCoordPointer(2, GL10.GL_FLOAT, 0, m.t);
                     gl.glColorPointer(4, GL10.GL_UNSIGNED_BYTE, 0, m.c);
                     gl.glDrawArrays(GL10.GL_TRIANGLES, 0, m.n);
                     gl.glPopMatrix();
@@ -1122,6 +1488,8 @@ public class MainActivity extends Activity {
             }
             gl.glDepthMask(true);
             gl.glDisable(GL10.GL_BLEND);
+            gl.glDisableClientState(GL10.GL_TEXTURE_COORD_ARRAY);
+            gl.glDisable(GL10.GL_TEXTURE_2D);
 
             gl.glPushMatrix();
             gl.glTranslatef(-px, -ey, -pz);
@@ -1132,12 +1500,20 @@ public class MainActivity extends Activity {
 
     // =====================================================================
     static class Hud extends View {
-        // itens do inventario criativo (0 = limpar slot)
-        static final int[] INV = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0};
-        static final int COLS = 6, ROWS = 2;
+        // itens do inventario criativo: blocos 1..30 + limpar (0)
+        static final int[] INV = new int[Game.NB];
+        static {
+            for (int i = 1; i < Game.NB; i++) INV[i - 1] = i;
+            INV[Game.NB - 1] = 0;
+        }
+        static final int COLS = 8, ROWS = 4;
+        static final float[] SRC = {0f, 0f, 16f, 0f, 0f, 16f};
 
         final Game g;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint ipT = new Paint(), ipL = new Paint(), ipR = new Paint(); // icones (sem suavizar)
+        final Matrix mx = new Matrix();
+        final float[] dst = new float[6];
         final Handler h = new Handler();
         final int[] role = new int[16]; // 0 nada, 1 joystick, 2 olhar, 3 pulo, 4 ui
         final float[] lx = new float[16], ly = new float[16], ax = new float[16], ay = new float[16];
@@ -1150,6 +1526,11 @@ public class MainActivity extends Activity {
         Hud(Context c, Game game) {
             super(c);
             g = game;
+            ipT.setFilterBitmap(false);
+            ipL.setFilterBitmap(false);
+            ipR.setFilterBitmap(false);
+            ipL.setColorFilter(new LightingColorFilter(0xFFD0D0D0, 0));
+            ipR.setColorFilter(new LightingColorFilter(0xFF9A9A9A, 0));
             for (int i = 0; i < 16; i++) {
                 final int id = i;
                 lp[i] = new Runnable() {
@@ -1176,7 +1557,7 @@ public class MainActivity extends Activity {
             float W = getWidth(), H = getHeight();
             novo.set(W - H * 0.38f, H * 0.02f, W - H * 0.02f, H * 0.12f);
             inv.set(W - H * 0.60f, H * 0.02f, W - H * 0.40f, H * 0.12f);
-            float pw = Math.min(W * 0.8f, H * 1.6f), ph = H * 0.62f;
+            float pw = Math.min(W * 0.86f, H * 1.75f), ph = H * 0.66f;
             panel.set((W - pw) / 2f, H * 0.15f, (W + pw) / 2f, H * 0.15f + ph);
         }
 
@@ -1192,7 +1573,7 @@ public class MainActivity extends Activity {
 
         void cellRect(int i, RectF out) {
             float H = getHeight();
-            float pad = H * 0.03f, title = H * 0.07f;
+            float pad = H * 0.018f, title = H * 0.065f;
             float cw = (panel.width() - pad * (COLS + 1)) / COLS;
             float ch = (panel.height() - title - pad * (ROWS + 1)) / ROWS;
             int cx = i % COLS, cy = i / COLS;
@@ -1328,13 +1709,29 @@ public class MainActivity extends Activity {
             return true;
         }
 
-        // icone do bloco: faixa de cima = topo, resto = lado
-        void drawBlock(Canvas c, int b, float x, float y, float w, float hh) {
-            p.setStyle(Paint.Style.FILL);
-            p.setColor(Game.COR[b][0] | 0xFF000000);
-            c.drawRect(x, y, x + w, y + hh * 0.35f, p);
-            p.setColor(Game.COR[b][1] | 0xFF000000);
-            c.drawRect(x, y + hh * 0.35f, x + w, y + hh, p);
+        // desenha um tile (16x16) esticado num paralelogramo: origem, ponta do u, ponta do v
+        void isoFace(Canvas c, Bitmap bmp, float ox, float oy, float ux, float uy, float vx, float vy, Paint pt) {
+            dst[0] = ox; dst[1] = oy; dst[2] = ux; dst[3] = uy; dst[4] = vx; dst[5] = vy;
+            mx.setPolyToPoly(SRC, 0, dst, 0, 3);
+            c.drawBitmap(bmp, mx, pt);
+        }
+
+        // icone do bloco em cubo isometrico, com as texturas de verdade
+        void drawIcon(Canvas c, int b, float x, float y, float s) {
+            Bitmap top = Game.Tex.tile(Game.TILE[b][0]);
+            Bitmap side = Game.Tex.tile(Game.TILE[b][1]);
+            float cx = x + s * 0.5f;
+            float rY = y + s * 0.25f, cY = y + s * 0.5f, blY = y + s * 0.75f, bY = y + s;
+            isoFace(c, top, cx, y, x + s, rY, x, rY, ipT);          // topo: T -> R, T -> L
+            isoFace(c, side, x, rY, cx, cY, x, blY, ipL);           // esquerda: L -> C, L -> BL
+            isoFace(c, side, cx, cY, x + s, rY, cx, bY, ipR);       // direita: C -> R, C -> B
+        }
+
+        void fitText(Canvas c, String s, float cx, float base, float size, float maxW) {
+            p.setTextSize(size);
+            float w = p.measureText(s);
+            if (w > maxW) p.setTextSize(size * maxW / w);
+            c.drawText(s, cx, base, p);
         }
 
         void button(Canvas c, RectF r, String label, float H, boolean on) {
@@ -1412,31 +1809,35 @@ public class MainActivity extends Activity {
                 c.drawRoundRect(panel, H * 0.03f, H * 0.03f, p);
                 p.setStyle(Paint.Style.FILL);
                 p.setTextAlign(Paint.Align.CENTER);
-                p.setTextSize(H * 0.035f);
-                c.drawText("CRIATIVO - escolhe um slot la embaixo e toca no bloco", panel.centerX(),
-                        panel.top + H * 0.055f, p);
+                p.setColor(0xFFFFFFFF);
+                fitText(c, "CRIATIVO - escolhe um slot la embaixo e toca no bloco", panel.centerX(),
+                        panel.top + H * 0.048f, H * 0.032f, panel.width() * 0.94f);
                 int cur = g.slots[g.sel];
                 for (int i = 0; i < INV.length; i++) {
                     cellRect(i, cell);
                     int b = INV[i];
                     p.setStyle(Paint.Style.FILL);
                     p.setColor(0xFF3C3C3C);
-                    c.drawRoundRect(cell, H * 0.015f, H * 0.015f, p);
-                    if (b > 0) {
-                        float ins = cell.width() * 0.2f;
-                        drawBlock(c, b, cell.left + ins, cell.top + ins * 0.5f,
-                                cell.width() - 2f * ins, cell.height() * 0.5f);
-                    }
-                    p.setStyle(Paint.Style.FILL);
+                    c.drawRoundRect(cell, H * 0.012f, H * 0.012f, p);
                     p.setColor(0xFFFFFFFF);
                     p.setTextAlign(Paint.Align.CENTER);
-                    p.setTextSize(H * 0.03f);
-                    c.drawText(b > 0 ? Game.NOMES[b] : "LIMPAR", cell.centerX(), cell.bottom - H * 0.02f, p);
+                    if (b > 0) {
+                        float sz = Math.min(cell.width(), cell.height()) * 0.62f;
+                        drawIcon(c, b, cell.centerX() - sz / 2f, cell.top + cell.height() * 0.05f, sz);
+                        p.setStyle(Paint.Style.FILL);
+                        p.setColor(0xFFFFFFFF);
+                        p.setTextAlign(Paint.Align.CENTER);
+                        fitText(c, Game.NOMES[b], cell.centerX(), cell.bottom - H * 0.012f, H * 0.024f,
+                                cell.width() * 0.94f);
+                    } else {
+                        fitText(c, "LIMPAR", cell.centerX(), cell.centerY() + H * 0.01f, H * 0.03f,
+                                cell.width() * 0.9f);
+                    }
                     if (b > 0 && b == cur) {
                         p.setStyle(Paint.Style.STROKE);
                         p.setStrokeWidth(H * 0.008f);
                         p.setColor(0xFFFFFFFF);
-                        c.drawRoundRect(cell, H * 0.015f, H * 0.015f, p);
+                        c.drawRoundRect(cell, H * 0.012f, H * 0.012f, p);
                     }
                 }
             }
@@ -1450,7 +1851,7 @@ public class MainActivity extends Activity {
                 p.setColor(0x99000000);
                 c.drawRoundRect(rr, s * 0.12f, s * 0.12f, p);
                 int b = g.slots[i];
-                if (b > 0) drawBlock(c, b, x0 + s * 0.16f, tp + s * 0.16f, s * 0.68f, s * 0.68f);
+                if (b > 0) drawIcon(c, b, x0 + s * 0.15f, tp + s * 0.12f, s * 0.7f);
                 p.setStyle(Paint.Style.STROKE);
                 p.setStrokeWidth(i == g.sel ? s * 0.1f : s * 0.04f);
                 p.setColor(i == g.sel ? 0xFFFFFFFF : 0x99000000);
